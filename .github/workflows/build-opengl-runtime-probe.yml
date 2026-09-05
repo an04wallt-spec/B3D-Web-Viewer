@@ -1,0 +1,29 @@
+name: Build BAZIS OpenGL runtime probe
+
+on:
+  push:
+    paths:
+      - 'host/BazisOpenGLRuntimeProbe/**'
+      - '.github/workflows/build-opengl-runtime-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+      - name: Build Win32 Release
+        run: msbuild host/BazisOpenGLRuntimeProbe/BazisOpenGLRuntimeProbe.sln /m /p:Configuration=Release /p:Platform=Win32
+      - name: List output
+        shell: powershell
+        run: Get-ChildItem -Recurse host/BazisOpenGLRuntimeProbe/bin
+      - name: Upload runtime probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: BAZIS-OpenGL-Runtime-Probe-Windows-x86
+          path: |
+            host/BazisOpenGLRuntimeProbe/bin/BAZIS-OpenGL-Runtime-Probe.exe
+            host/BazisOpenGLRuntimeProbe/bin/BAZISOpenGLRuntimeProbe.dll
+          if-no-files-found: error
