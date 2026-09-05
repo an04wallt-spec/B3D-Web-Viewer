@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
@@ -7,7 +9,8 @@ namespace B3DPublisherHost;
 internal static class Program
 {
     private static readonly TimeSpan UiTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan ExportTimeout = TimeSpan.FromMinutes(3);
+    private static readonly TimeSpan CaptureWindow = TimeSpan.FromMinutes(3);
+    private static readonly ConcurrentDictionary<string, byte> Changed = new(StringComparer.OrdinalIgnoreCase);
 
     [STAThread]
     private static void Main(string[] args)
@@ -19,60 +22,85 @@ internal static class Program
             var input = ResolveInput(args);
             if (input is null) return;
 
-            var workDir = Path.Combine(
-                Path.GetTempPath(),
-                "B3D-Publisher",
-                Path.GetFileNameWithoutExtension(input) + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-            Directory.CreateDirectory(workDir);
-            var exported3ds = Path.Combine(workDir, "model.3ds");
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+            var captureDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                "B3D-Native-Capture_" + stamp);
+            Directory.CreateDirectory(captureDir);
+
+            var webViewerDll = FindWebViewerDll();
+            WriteStatus(captureDir, new
+            {
+                input,
+                started = DateTime.Now,
+                webViewerDll,
+                mode = "BAZIS native WebViewer black-box capture",
+                note = "No B3D reconstruction and no interchange export are used."
+            });
 
             OpenWithBazis(input);
             var bazisWindow = WaitForBazisWindow(Path.GetFileNameWithoutExtension(input), UiTimeout);
             if (bazisWindow is null)
                 throw new InvalidOperationException("Не найдено окно БАЗИС после открытия B3D.");
 
+            var roots = BuildWatchRoots();
+            using var watchers = new WatcherSet(roots, captureDir);
+            watchers.Start();
+
             bazisWindow.SetFocus();
-            InvokeMenuItem(bazisWindow, "Файл");
-            var exportItem = WaitForElement(
-                AutomationElement.RootElement,
-                e => IsMenuItem(e) && NameContains(e, "Экспорт"),
-                TimeSpan.FromSeconds(10));
-            if (exportItem is null)
-                throw new InvalidOperationException("В меню БАЗИС не найдена команда «Экспорт».");
-            InvokeElement(exportItem);
+            var invoked = TryInvokeNativeWebViewer(bazisWindow);
 
-            var saveDialog = WaitForElement(
-                AutomationElement.RootElement,
-                e => IsWindow(e) && (NameContains(e, "Сохран") || NameContains(e, "Экспорт")),
-                TimeSpan.FromSeconds(20));
-            if (saveDialog is null)
-                throw new InvalidOperationException("Не найден диалог экспорта/сохранения БАЗИС.");
+            if (!invoked)
+            {
+                MessageBox.Show(
+                    "Наблюдение за штатной конвертацией БАЗИС запущено.\n\n" +
+                    "В БАЗИСе вызовите обычную команду «Веб-Просмотр / Отправить модель».\n" +
+                    "Это НЕ экспорт в 3DS/OBJ/DAE — мы фиксируем только то, что сам БАЗИС создаёт для своего WebViewer.\n\n" +
+                    "После завершения передачи нажмите OK здесь.",
+                    "B3D Native Capture",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Штатная команда WebViewer в БАЗИСе запущена автоматически.\n\n" +
+                    "Дождитесь окончания операции в БАЗИСе и нажмите OK здесь.",
+                    "B3D Native Capture",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
 
-            Select3dsFormat(saveDialog);
-            SetFileName(saveDialog, exported3ds);
-            ClickSave(saveDialog);
+            Thread.Sleep(1500);
+            watchers.Stop();
 
-            WaitForStableFile(exported3ds, ExportTimeout);
-
+            var copied = CopyCapturedFiles(captureDir, roots);
+            var report = new
+            {
+                input,
+                finished = DateTime.Now,
+                webViewerDll,
+                commandInvokedAutomatically = invoked,
+                watchRoots = roots,
+                changedCount = Changed.Count,
+                copiedCount = copied.Count,
+                copied
+            };
             File.WriteAllText(
-                Path.Combine(workDir, "handoff.txt"),
-                "BAZIS_EXPORT_OK\r\n" + exported3ds + "\r\n",
+                Path.Combine(captureDir, "capture-report.json"),
+                JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }),
                 System.Text.Encoding.UTF8);
 
+            Process.Start(new ProcessStartInfo { FileName = captureDir, UseShellExecute = true });
             MessageBox.Show(
-                "БАЗИС сформировал готовую геометрию.\n\n" + exported3ds +
-                "\n\nСледующий этап Publisher сможет забрать этот файл автоматически.",
-                "B3D Publisher — экспорт готов",
+                $"Захват закончен.\n\nНайдено изменённых файлов: {Changed.Count}\nСкопировано кандидатов: {copied.Count}\n\nПапка открыта на рабочем столе.",
+                "B3D Native Capture",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
-                ex.Message,
-                "B3D Publisher",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+            MessageBox.Show(ex.ToString(), "B3D Native Capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -106,177 +134,201 @@ internal static class Program
 
     private static void OpenWithBazis(string b3dPath)
     {
-        var psi = new ProcessStartInfo
+        Process.Start(new ProcessStartInfo
         {
             FileName = b3dPath,
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(b3dPath)!
+        });
+    }
+
+    private static string? FindWebViewerDll()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "BazisSoft", "Bazis", "WebViewer.dll"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "BazisSoft", "Bazis", "WebViewer.dll")
         };
-        Process.Start(psi);
+        return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static List<string> BuildWatchRoots()
+    {
+        var list = new List<string>();
+        AddRoot(list, Path.GetTempPath());
+        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BazisSoft"));
+        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BazisSoft"));
+        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Bazis"));
+        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static void AddRoot(List<string> list, string path)
+    {
+        try { if (Directory.Exists(path)) list.Add(Path.GetFullPath(path)); } catch { }
+    }
+
+    private static bool TryInvokeNativeWebViewer(AutomationElement bazisWindow)
+    {
+        try
+        {
+            var all = bazisWindow.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            foreach (AutomationElement e in all)
+            {
+                var name = e.Current.Name ?? string.Empty;
+                var hit = name.Contains("Веб-Просмотр", StringComparison.OrdinalIgnoreCase) ||
+                          name.Contains("Веб просмотр", StringComparison.OrdinalIgnoreCase) ||
+                          name.Contains("WebViewer", StringComparison.OrdinalIgnoreCase) ||
+                          (name.Contains("Веб", StringComparison.OrdinalIgnoreCase) && name.Contains("Просмотр", StringComparison.OrdinalIgnoreCase));
+                if (!hit) continue;
+
+                if (e.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
+                {
+                    ((InvokePattern)ip).Invoke();
+                    return true;
+                }
+                if (e.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ep))
+                {
+                    ((ExpandCollapsePattern)ep).Expand();
+                    Thread.Sleep(300);
+                    return true;
+                }
+            }
+        }
+        catch { }
+        return false;
     }
 
     private static AutomationElement? WaitForBazisWindow(string modelName, TimeSpan timeout)
     {
-        return WaitForElement(
-            AutomationElement.RootElement,
-            e => IsWindow(e) &&
-                 (NameContains(e, modelName) || NameContains(e, "БАЗИС") || NameContains(e, "BAZIS")),
-            timeout);
-    }
-
-    private static void InvokeMenuItem(AutomationElement root, string name)
-    {
-        var item = WaitForElement(root, e => IsMenuItem(e) && NameEquals(e, name), TimeSpan.FromSeconds(10));
-        if (item is null) throw new InvalidOperationException($"Не найден пункт меню «{name}».");
-
-        if (item.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expandPattern))
-            ((ExpandCollapsePattern)expandPattern).Expand();
-        else
-            InvokeElement(item);
-    }
-
-    private static void Select3dsFormat(AutomationElement dialog)
-    {
-        var combos = dialog.FindAll(TreeScope.Descendants,
-            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox));
-
-        foreach (AutomationElement combo in combos)
-        {
-            try
-            {
-                if (combo.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ep))
-                    ((ExpandCollapsePattern)ep).Expand();
-
-                Thread.Sleep(250);
-                var item = combo.FindFirst(TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
-
-                var all = combo.FindAll(TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
-                foreach (AutomationElement candidate in all)
-                {
-                    if (!NameContains(candidate, "3ds")) continue;
-                    if (candidate.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var sp))
-                    {
-                        ((SelectionItemPattern)sp).Select();
-                        return;
-                    }
-                    InvokeElement(candidate);
-                    return;
-                }
-            }
-            catch { /* try next combo */ }
-        }
-
-        // Some standard Save As dialogs infer the format from the extension.
-        // In that case SetFileName(model.3ds) below is sufficient.
-    }
-
-    private static void SetFileName(AutomationElement dialog, string path)
-    {
-        AutomationElement? edit = null;
-
-        var byId = dialog.FindFirst(TreeScope.Descendants,
-            new PropertyCondition(AutomationElement.AutomationIdProperty, "1001"));
-        if (byId is not null && byId.Current.ControlType == ControlType.Edit)
-            edit = byId;
-
-        edit ??= dialog.FindFirst(TreeScope.Descendants,
-            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
-
-        if (edit is null || !edit.TryGetCurrentPattern(ValuePattern.Pattern, out var vp))
-            throw new InvalidOperationException("Не найдено поле имени файла в диалоге экспорта.");
-
-        ((ValuePattern)vp).SetValue(path);
-    }
-
-    private static void ClickSave(AutomationElement dialog)
-    {
-        var buttons = dialog.FindAll(TreeScope.Descendants,
-            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-
-        foreach (AutomationElement button in buttons)
-        {
-            if (NameEquals(button, "Сохранить") || NameEquals(button, "Save"))
-            {
-                InvokeElement(button);
-                return;
-            }
-        }
-
-        throw new InvalidOperationException("Не найдена кнопка «Сохранить».");
-    }
-
-    private static void WaitForStableFile(string path, TimeSpan timeout)
-    {
-        var sw = Stopwatch.StartNew();
-        long lastSize = -1;
-        var stableTicks = 0;
-
-        while (sw.Elapsed < timeout)
-        {
-            if (File.Exists(path))
-            {
-                var size = new FileInfo(path).Length;
-                if (size > 0 && size == lastSize)
-                {
-                    stableTicks++;
-                    if (stableTicks >= 4) return;
-                }
-                else
-                {
-                    stableTicks = 0;
-                    lastSize = size;
-                }
-            }
-            Thread.Sleep(500);
-        }
-
-        throw new TimeoutException("БАЗИС не создал стабильный 3DS-файл за отведённое время.");
-    }
-
-    private static AutomationElement? WaitForElement(
-        AutomationElement root,
-        Func<AutomationElement, bool> predicate,
-        TimeSpan timeout)
-    {
         var sw = Stopwatch.StartNew();
         while (sw.Elapsed < timeout)
         {
             try
             {
-                var all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
-                foreach (AutomationElement e in all)
-                    if (predicate(e)) return e;
+                var windows = AutomationElement.RootElement.FindAll(
+                    TreeScope.Children,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window));
+                foreach (AutomationElement e in windows)
+                {
+                    var name = e.Current.Name ?? string.Empty;
+                    if (name.Contains(modelName, StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("БАЗИС", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("BAZIS", StringComparison.OrdinalIgnoreCase))
+                        return e;
+                }
             }
-            catch { /* UI tree may change while BAZIS opens dialogs */ }
-
-            Thread.Sleep(200);
+            catch { }
+            Thread.Sleep(250);
         }
         return null;
     }
 
-    private static void InvokeElement(AutomationElement element)
+    private static List<object> CopyCapturedFiles(string captureDir, IReadOnlyList<string> roots)
     {
-        if (element.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
+        var copied = new List<object>();
+        var payloadDir = Path.Combine(captureDir, "payload-candidates");
+        Directory.CreateDirectory(payloadDir);
+        long total = 0;
+        var index = 0;
+
+        foreach (var source in Changed.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
-            ((InvokePattern)ip).Invoke();
-            return;
+            try
+            {
+                if (!File.Exists(source)) continue;
+                if (source.StartsWith(captureDir, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var fi = new FileInfo(source);
+                if (fi.Length < 256 || fi.Length > 512L * 1024 * 1024) continue;
+                if (total + fi.Length > 1024L * 1024 * 1024) break;
+
+                var ext = Path.GetExtension(source);
+                var safe = MakeSafeFileName(Path.GetFileNameWithoutExtension(source));
+                var dest = Path.Combine(payloadDir, $"{index++:D4}_{safe}{ext}");
+                File.Copy(source, dest, true);
+                total += fi.Length;
+
+                copied.Add(new
+                {
+                    source,
+                    copy = dest,
+                    size = fi.Length,
+                    modified = fi.LastWriteTime
+                });
+            }
+            catch { }
         }
-        if (element.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var sp))
-        {
-            ((SelectionItemPattern)sp).Select();
-            return;
-        }
-        throw new InvalidOperationException("Элемент интерфейса БАЗИС нельзя активировать через UI Automation.");
+        return copied;
     }
 
-    private static bool IsWindow(AutomationElement e) => e.Current.ControlType == ControlType.Window;
-    private static bool IsMenuItem(AutomationElement e) => e.Current.ControlType == ControlType.MenuItem;
+    private static string MakeSafeFileName(string name)
+    {
+        foreach (var ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
+        if (name.Length > 80) name = name[..80];
+        return string.IsNullOrWhiteSpace(name) ? "file" : name;
+    }
 
-    private static bool NameEquals(AutomationElement e, string text) =>
-        string.Equals(e.Current.Name?.Trim(), text, StringComparison.OrdinalIgnoreCase);
+    private static void WriteStatus(string captureDir, object obj)
+    {
+        File.WriteAllText(
+            Path.Combine(captureDir, "start-info.json"),
+            JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true }),
+            System.Text.Encoding.UTF8);
+    }
 
-    private static bool NameContains(AutomationElement e, string text) =>
-        (e.Current.Name ?? string.Empty).Contains(text, StringComparison.OrdinalIgnoreCase);
+    private sealed class WatcherSet : IDisposable
+    {
+        private readonly List<FileSystemWatcher> _watchers = new();
+        private readonly string _captureDir;
+
+        public WatcherSet(IEnumerable<string> roots, string captureDir)
+        {
+            _captureDir = captureDir;
+            foreach (var root in roots)
+            {
+                try
+                {
+                    var w = new FileSystemWatcher(root)
+                    {
+                        IncludeSubdirectories = true,
+                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+                        EnableRaisingEvents = false
+                    };
+                    w.Created += OnChanged;
+                    w.Changed += OnChanged;
+                    w.Renamed += OnRenamed;
+                    _watchers.Add(w);
+                }
+                catch { }
+            }
+        }
+
+        public void Start()
+        {
+            Changed.Clear();
+            foreach (var w in _watchers) w.EnableRaisingEvents = true;
+        }
+
+        public void Stop()
+        {
+            foreach (var w in _watchers) w.EnableRaisingEvents = false;
+        }
+
+        private void OnChanged(object sender, FileSystemEventArgs e)
+        {
+            if (e.FullPath.StartsWith(_captureDir, StringComparison.OrdinalIgnoreCase)) return;
+            Changed.TryAdd(e.FullPath, 0);
+        }
+
+        private void OnRenamed(object sender, RenamedEventArgs e)
+        {
+            if (e.FullPath.StartsWith(_captureDir, StringComparison.OrdinalIgnoreCase)) return;
+            Changed.TryAdd(e.FullPath, 0);
+        }
+
+        public void Dispose()
+        {
+            foreach (var w in _watchers) w.Dispose();
+        }
+    }
 }
