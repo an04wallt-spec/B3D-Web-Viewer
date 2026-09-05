@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
@@ -11,6 +13,16 @@ internal static class Program
 {
     private static readonly TimeSpan UiTimeout = TimeSpan.FromSeconds(90);
     private static readonly ConcurrentDictionary<string, byte> Changed = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] NativeBridgeTerms =
+    {
+        "WebViewer", "UploadModelFromStream", "InitializeWebViewerDLL", "FinalizeWebViewerDLL",
+        "GetStreamFromLibEvent", "TGetStreamFromLibEvent", "FGetStreamFromLibEvent",
+        "LibKernel3D", "CFRN", "cfrn", "TStream", "TMemoryStream",
+        "mesh", "Mesh", "triangle", "Triangle", "triang", "Triang", "vertex", "Vertex",
+        "facet", "Facet", "tessell", "Tessell", "polygon", "Polygon", "polyhedron", "Polyhedron",
+        "Export", "export", "Save", "save", "Serialize", "serialize", "Model", "model"
+    };
 
     [STAThread]
     private static void Main(string[] args)
@@ -29,13 +41,21 @@ internal static class Program
             Directory.CreateDirectory(captureDir);
 
             var webViewerDll = FindWebViewerDll();
+            var bazisRoot = FindBazisRoot(webViewerDll);
+            var discovery = DiscoverNativeBridge(bazisRoot);
+            File.WriteAllText(
+                Path.Combine(captureDir, "native-bridge-discovery.json"),
+                JsonSerializer.Serialize(discovery, new JsonSerializerOptions { WriteIndented = true }),
+                Encoding.UTF8);
+
             WriteStatus(captureDir, new
             {
                 input,
                 started = DateTime.Now,
                 webViewerDll,
-                mode = "BAZIS native WebViewer black-box capture",
-                note = "No B3D reconstruction and no interchange export are used."
+                bazisRoot,
+                mode = "BAZIS native final-geometry bridge discovery + WebViewer black-box capture",
+                note = "No B3D geometry reconstruction and no OBJ/3DS/DAE route are used. The discovery stage only inventories public PE metadata and embedded identifiers from the installed BAZIS binaries."
             });
 
             OpenWithBazis(input);
@@ -47,19 +67,16 @@ internal static class Program
             using var watchers = new WatcherSet(roots, captureDir);
             watchers.Start();
 
-            // Some BAZIS windows/providers reject UI Automation SetFocus().
-            // Focus is not required for searching/invoking descendants, so it must never be fatal.
             TrySetFocus(bazisWindow);
             var invoked = TryInvokeNativeWebViewer(bazisWindow);
 
             if (!invoked)
             {
                 MessageBox.Show(
-                    "Наблюдение за штатной конвертацией БАЗИС запущено.\n\n" +
-                    "В БАЗИСе вызовите обычную команду «Веб-Просмотр / Отправить модель».\n" +
-                    "Это НЕ экспорт в 3DS/OBJ/DAE — мы фиксируем только то, что сам БАЗИС создаёт для своего WebViewer.\n\n" +
-                    "После завершения передачи нажмите OK здесь.",
-                    "B3D Native Capture",
+                    "Publisher уже собрал карту штатных модулей БАЗИС и начал наблюдение за локальными файлами.\n\n" +
+                    "Если команда «Веб-Просмотр» у вас доступна — вызовите её обычным способом. Если она заблокирована техсопровождением, просто нажмите OK: отчёт native-bridge-discovery.json всё равно уже создан.\n\n" +
+                    "Никакого OBJ/3DS/DAE и реконструкции B3D здесь нет.",
+                    "B3D Publisher",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             }
@@ -68,7 +85,7 @@ internal static class Program
                 MessageBox.Show(
                     "Штатная команда WebViewer в БАЗИСе запущена автоматически.\n\n" +
                     "Дождитесь окончания операции в БАЗИСе и нажмите OK здесь.",
-                    "B3D Native Capture",
+                    "B3D Publisher",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             }
@@ -82,7 +99,11 @@ internal static class Program
                 input,
                 finished = DateTime.Now,
                 webViewerDll,
+                bazisRoot,
                 commandInvokedAutomatically = invoked,
+                nativeDiscoveryFile = Path.Combine(captureDir, "native-bridge-discovery.json"),
+                nativeDiscoveryModules = discovery.modules.Count,
+                nativeDiscoveryHighValueHits = discovery.highValueHits,
                 watchRoots = roots,
                 changedCount = Changed.Count,
                 copiedCount = copied.Count,
@@ -91,18 +112,18 @@ internal static class Program
             File.WriteAllText(
                 Path.Combine(captureDir, "capture-report.json"),
                 JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }),
-                System.Text.Encoding.UTF8);
+                Encoding.UTF8);
 
             Process.Start(new ProcessStartInfo { FileName = captureDir, UseShellExecute = true });
             MessageBox.Show(
-                $"Захват закончен.\n\nНайдено изменённых файлов: {Changed.Count}\nСкопировано кандидатов: {copied.Count}\n\nПапка открыта на рабочем столе.",
-                "B3D Native Capture",
+                $"Этап Publisher завершён.\n\nКандидатов штатного моста: {discovery.highValueHits.Count}\nИзменённых файлов: {Changed.Count}\nСкопировано файлов: {copied.Count}\n\nПапка открыта на рабочем столе.",
+                "B3D Publisher",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.ToString(), "B3D Native Capture", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(ex.ToString(), "B3D Publisher", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -146,12 +167,113 @@ internal static class Program
 
     private static string? FindWebViewerDll()
     {
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                if (!(process.ProcessName.Contains("bazis", StringComparison.OrdinalIgnoreCase) ||
+                      (process.MainWindowTitle ?? "").Contains("БАЗИС", StringComparison.OrdinalIgnoreCase))) continue;
+                foreach (ProcessModule m in process.Modules)
+                    if (string.Equals(Path.GetFileName(m.FileName), "WebViewer.dll", StringComparison.OrdinalIgnoreCase))
+                        return m.FileName;
+            }
+            catch { }
+        }
+
         var candidates = new[]
         {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "BazisSoft", "Bazis", "WebViewer.dll"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "BazisSoft", "Bazis", "WebViewer.dll")
         };
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static string? FindBazisRoot(string? webViewerDll)
+    {
+        if (!string.IsNullOrWhiteSpace(webViewerDll)) return Path.GetDirectoryName(webViewerDll);
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "BazisSoft", "Bazis"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "BazisSoft", "Bazis")
+        };
+        return candidates.FirstOrDefault(Directory.Exists);
+    }
+
+    private sealed record NativeModuleHit(string path, long size, string? version, List<string> identifiers, List<string> references);
+    private sealed record NativeBridgeDiscovery(DateTime time, string? bazisRoot, List<NativeModuleHit> modules, List<object> highValueHits);
+
+    private static NativeBridgeDiscovery DiscoverNativeBridge(string? bazisRoot)
+    {
+        var modules = new List<NativeModuleHit>();
+        var high = new List<object>();
+        if (string.IsNullOrWhiteSpace(bazisRoot) || !Directory.Exists(bazisRoot))
+            return new NativeBridgeDiscovery(DateTime.Now, bazisRoot, modules, high);
+
+        var files = Directory.EnumerateFiles(bazisRoot, "*.*", SearchOption.TopDirectoryOnly)
+            .Where(p => p.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        foreach (var path in files)
+        {
+            try
+            {
+                var fi = new FileInfo(path);
+                if (fi.Length <= 0 || fi.Length > 512L * 1024 * 1024) continue;
+                var bytes = File.ReadAllBytes(path);
+                var ascii = Encoding.ASCII.GetString(bytes);
+                var unicode = Encoding.Unicode.GetString(bytes);
+
+                var ids = NativeBridgeTerms
+                    .Where(term => ascii.Contains(term, StringComparison.Ordinal) || unicode.Contains(term, StringComparison.Ordinal))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (ids.Count == 0) continue;
+
+                var refs = ExtractInterestingIdentifiers(ascii)
+                    .Concat(ExtractInterestingIdentifiers(unicode))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .Take(400)
+                    .ToList();
+
+                var ver = FileVersionInfo.GetVersionInfo(path).FileVersion;
+                modules.Add(new NativeModuleHit(path, fi.Length, ver, ids, refs));
+
+                var exact = ids.Where(x =>
+                    x.Equals("UploadModelFromStream", StringComparison.OrdinalIgnoreCase) ||
+                    x.Equals("InitializeWebViewerDLL", StringComparison.OrdinalIgnoreCase) ||
+                    x.Equals("GetStreamFromLibEvent", StringComparison.OrdinalIgnoreCase) ||
+                    x.Equals("LibKernel3D", StringComparison.OrdinalIgnoreCase) ||
+                    x.Equals("CFRN", StringComparison.OrdinalIgnoreCase)).ToArray();
+                if (exact.Length > 0)
+                    high.Add(new { module = path, exact, related = refs.Take(80).ToArray() });
+            }
+            catch { }
+        }
+
+        modules = modules.OrderByDescending(m => Score(m.identifiers)).ThenBy(m => m.path, StringComparer.OrdinalIgnoreCase).ToList();
+        return new NativeBridgeDiscovery(DateTime.Now, bazisRoot, modules, high);
+    }
+
+    private static int Score(IEnumerable<string> ids)
+    {
+        var set = ids.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var score = set.Count;
+        foreach (var key in new[] { "UploadModelFromStream", "GetStreamFromLibEvent", "InitializeWebViewerDLL", "LibKernel3D", "CFRN", "mesh", "triangle", "tessell" })
+            if (set.Contains(key)) score += 20;
+        return score;
+    }
+
+    private static IEnumerable<string> ExtractInterestingIdentifiers(string text)
+    {
+        var rx = new Regex(@"[A-Za-z_][A-Za-z0-9_:.@?$<>~-]{4,120}", RegexOptions.Compiled);
+        foreach (Match m in rx.Matches(text))
+        {
+            var s = m.Value;
+            if (NativeBridgeTerms.Any(t => s.Contains(t, StringComparison.OrdinalIgnoreCase))) yield return s;
+        }
     }
 
     private static List<string> BuildWatchRoots()
@@ -282,7 +404,7 @@ internal static class Program
         File.WriteAllText(
             Path.Combine(captureDir, "start-info.json"),
             JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true }),
-            System.Text.Encoding.UTF8);
+            Encoding.UTF8);
     }
 
     private sealed class WatcherSet : IDisposable
