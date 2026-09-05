@@ -43,12 +43,9 @@ def _normal(a: list[float], b: list[float], c: list[float]) -> tuple[float, floa
 
 
 def _material_color(value: Any) -> list[float]:
-    # Stable neutral palette generated from the material identity. This is only
-    # a fallback until embedded B3D textures are decoded by the material layer.
     key = str(value if value is not None else "default").encode("utf-8", errors="replace")
     d = hashlib.sha256(key).digest()
     base = [0.50 + d[i] / 255.0 * 0.30 for i in range(3)]
-    # Avoid saturated toy-like colors: pull toward warm grey.
     grey = sum(base) / 3.0
     return [round(c * 0.55 + grey * 0.25 + 0.16, 4) for c in base]
 
@@ -98,10 +95,7 @@ def build_payload(input_path: str | Path) -> dict[str, Any]:
     return {
         "format": "b3d-offline-view-1",
         "title": Path(input_path).stem,
-        "source": {
-            "signature": meta.get("signature"),
-            "file_size": meta.get("file_size"),
-        },
+        "source": {"signature": meta.get("signature"), "file_size": meta.get("file_size")},
         "status": geom.get("status"),
         "bounds": _compact_bounds(geom.get("bounds")),
         "panel_count": geom.get("panel_count", 0),
@@ -135,7 +129,7 @@ button:hover{background:white} button.on{background:#202020;color:white;border-c
   <button id="alpha">Прозрачность</button>
   <button id="full">На весь экран</button>
 </div>
-<div id="info"></div><div id="hint">ЛКМ — вращение · колесо — масштаб · ПКМ — панорама</div>
+<div id="info"></div><div id="hint">ЛКМ — осмотр · колесо — масштаб · ПКМ — панорама</div>
 <script id="payload" type="application/json">__PAYLOAD__</script>
 <script>
 (()=>{'use strict';
@@ -149,10 +143,12 @@ const lfs=`precision mediump float;uniform vec4 color;void main(){gl_FragColor=c
 function shader(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s;}
 function program(a,b){const p=gl.createProgram();gl.attachShader(p,shader(gl.VERTEX_SHADER,a));gl.attachShader(p,shader(gl.FRAGMENT_SHADER,b));gl.linkProgram(p);if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
 const prog=program(vs,fs), lineProg=program(lvs,lfs);
-function b64f32(s){const bin=atob(s), u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new Float32Array(u.buffer);}
+function b64f32(s){const bin=atob(s),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new Float32Array(u.buffer);}
 const parts=DATA.panels.map(x=>{const a=b64f32(x.data),e=b64f32(x.edges);const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,a,gl.STATIC_DRAW);const eb=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,eb);gl.bufferData(gl.ARRAY_BUFFER,e,gl.STATIC_DRAW);return {...x,b,eb};});
-const B=DATA.bounds, center=[0,1,2].map(i=>(B.min[i]+B.max[i])/2), size=Math.max(...[0,1,2].map(i=>B.max[i]-B.min[i]));
-let yaw=.72,pitch=.42,dist=size*1.75||10,pan=[0,0,0],wire=false,solid=true,alpha=.42;
+const B=DATA.bounds,center=[0,1,2].map(i=>(B.min[i]+B.max[i])/2),size=Math.max(...[0,1,2].map(i=>B.max[i]-B.min[i]));
+const HOME_YAW=.72,HOME_PITCH=.36,HOME_DIST=1.75;
+const MIN_PITCH=-.62,MAX_PITCH=1.12,ROT_SPEED=.0042,MIN_DIST=.32,MAX_DIST=6.0;
+let yaw=HOME_YAW,pitch=HOME_PITCH,dist=size*HOME_DIST||10,pan=[0,0,0],wire=false,solid=true,alpha=.42;
 function ident(){return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);}
 function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[0*4+r]*b[c*4+0]+a[1*4+r]*b[c*4+1]+a[2*4+r]*b[c*4+2]+a[3*4+r]*b[c*4+3];return o;}
 function persp(fov,asp,n,f){const t=1/Math.tan(fov/2),o=new Float32Array(16);o[0]=t/asp;o[5]=t;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);return o;}
@@ -163,9 +159,16 @@ function draw(){const dpr=Math.min(devicePixelRatio||1,2),w=Math.max(1,innerWidt
  if(solid){gl.useProgram(prog);const ap=gl.getAttribLocation(prog,'p'),an=gl.getAttribLocation(prog,'n');gl.uniformMatrix4fv(gl.getUniformLocation(prog,'mvp'),false,MVP);gl.uniformMatrix4fv(gl.getUniformLocation(prog,'model'),false,M);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);for(const x of parts){gl.bindBuffer(gl.ARRAY_BUFFER,x.b);gl.enableVertexAttribArray(ap);gl.vertexAttribPointer(ap,3,gl.FLOAT,false,24,0);gl.enableVertexAttribArray(an);gl.vertexAttribPointer(an,3,gl.FLOAT,false,24,12);gl.uniform3fv(gl.getUniformLocation(prog,'color'),x.color);gl.uniform1f(gl.getUniformLocation(prog,'alpha'),alpha===1?1:alpha);gl.drawArrays(gl.TRIANGLES,0,x.vertex_count);}gl.disable(gl.BLEND);}
  if(wire){gl.useProgram(lineProg);const ap=gl.getAttribLocation(lineProg,'p');gl.uniformMatrix4fv(gl.getUniformLocation(lineProg,'mvp'),false,MVP);gl.uniform4f(gl.getUniformLocation(lineProg,'color'),.06,.06,.06,.70);for(const x of parts){gl.bindBuffer(gl.ARRAY_BUFFER,x.eb);gl.enableVertexAttribArray(ap);gl.vertexAttribPointer(ap,3,gl.FLOAT,false,12,0);gl.drawArrays(gl.LINES,0,x.edge_vertex_count);}}
  requestAnimationFrame(draw);}
-let drag=false,button=0,last=[0,0];canvas.addEventListener('contextmenu',e=>e.preventDefault());canvas.addEventListener('pointerdown',e=>{drag=true;button=e.button;last=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)});canvas.addEventListener('pointerup',()=>drag=false);canvas.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(button===0){yaw-=dx*.006;pitch=Math.max(-1.45,Math.min(1.45,pitch+dy*.006));}else{const s=dist*.0015;pan[0]-=dx*s*Math.sin(yaw)+dy*s*Math.cos(yaw)*Math.sin(pitch);pan[1]+=dx*s*Math.cos(yaw)-dy*s*Math.sin(yaw)*Math.sin(pitch);pan[2]+=dy*s*Math.cos(pitch);}});canvas.addEventListener('wheel',e=>{e.preventDefault();dist*=Math.exp(e.deltaY*.001);dist=Math.max(size*.08,Math.min(size*20,dist));},{passive:false});
+let drag=false,button=0,last=[0,0];
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+canvas.addEventListener('pointerdown',e=>{if(e.button!==0&&e.button!==2)return;drag=true;button=e.button;last=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);});
+function endDrag(){drag=false;}
+canvas.addEventListener('pointerup',endDrag);canvas.addEventListener('pointercancel',endDrag);
+canvas.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(button===0){yaw=(yaw-dx*ROT_SPEED)%(Math.PI*2);pitch=Math.max(MIN_PITCH,Math.min(MAX_PITCH,pitch+dy*ROT_SPEED));}else{const s=dist*.0012;pan[0]-=dx*s*Math.sin(yaw)+dy*s*Math.cos(yaw)*Math.sin(pitch);pan[1]+=dx*s*Math.cos(yaw)-dy*s*Math.sin(yaw)*Math.sin(pitch);pan[2]+=dy*s*Math.cos(pitch);}});
+canvas.addEventListener('wheel',e=>{e.preventDefault();dist*=Math.exp(e.deltaY*.00085);dist=Math.max(size*MIN_DIST,Math.min(size*MAX_DIST,dist));},{passive:false});
 function cls(id,on){document.getElementById(id).classList.toggle('on',on)}
-document.getElementById('reset').onclick=()=>{yaw=.72;pitch=.42;dist=size*1.75;pan=[0,0,0]};document.getElementById('wire').onclick=()=>{wire=!wire;cls('wire',wire)};document.getElementById('solid').onclick=()=>{solid=!solid;cls('solid',solid)};document.getElementById('alpha').onclick=()=>{alpha=alpha===1?.42:1;cls('alpha',alpha<1)};document.getElementById('full').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+document.getElementById('reset').onclick=()=>{yaw=HOME_YAW;pitch=HOME_PITCH;dist=size*HOME_DIST;pan=[0,0,0]};
+document.getElementById('wire').onclick=()=>{wire=!wire;cls('wire',wire)};document.getElementById('solid').onclick=()=>{solid=!solid;cls('solid',solid)};document.getElementById('alpha').onclick=()=>{alpha=alpha===1?.42:1;cls('alpha',alpha<1)};document.getElementById('full').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
 const warn=DATA.panels.reduce((n,p)=>n+(p.warnings?.length||0),0);document.getElementById('info').textContent=`${DATA.title} · деталей: ${DATA.panel_count}`+(warn?` · необработанных операций: ${warn}`:'');draw();
 })();
 </script>
