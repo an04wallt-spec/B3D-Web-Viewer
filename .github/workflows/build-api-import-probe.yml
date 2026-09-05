@@ -1,0 +1,25 @@
+name: Build BAZIS API import probe
+
+on:
+  push:
+    paths:
+      - 'host/BazisApiImportProbe/**'
+      - '.github/workflows/build-api-import-probe.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish single-file EXE
+        run: dotnet publish host/BazisApiImportProbe/BazisApiImportProbe.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: BAZIS-API-Import-Probe-Windows
+          path: out/BAZIS-API-Import-Probe.exe
+          if-no-files-found: error
