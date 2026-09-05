@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Text.Json;
 using System.Windows.Automation;
 using System.Windows.Forms;
@@ -9,7 +10,6 @@ namespace B3DPublisherHost;
 internal static class Program
 {
     private static readonly TimeSpan UiTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan CaptureWindow = TimeSpan.FromMinutes(3);
     private static readonly ConcurrentDictionary<string, byte> Changed = new(StringComparer.OrdinalIgnoreCase);
 
     [STAThread]
@@ -74,7 +74,7 @@ internal static class Program
             Thread.Sleep(1500);
             watchers.Stop();
 
-            var copied = CopyCapturedFiles(captureDir, roots);
+            var copied = CopyCapturedFiles(captureDir);
             var report = new
             {
                 input,
@@ -223,7 +223,7 @@ internal static class Program
         return null;
     }
 
-    private static List<object> CopyCapturedFiles(string captureDir, IReadOnlyList<string> roots)
+    private static List<object> CopyCapturedFiles(string captureDir)
     {
         var copied = new List<object>();
         var payloadDir = Path.Combine(captureDir, "payload-candidates");
