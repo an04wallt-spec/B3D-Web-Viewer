@@ -47,7 +47,9 @@ internal static class Program
             using var watchers = new WatcherSet(roots, captureDir);
             watchers.Start();
 
-            bazisWindow.SetFocus();
+            // Some BAZIS windows/providers reject UI Automation SetFocus().
+            // Focus is not required for searching/invoking descendants, so it must never be fatal.
+            TrySetFocus(bazisWindow);
             var invoked = TryInvokeNativeWebViewer(bazisWindow);
 
             if (!invoked)
@@ -165,6 +167,13 @@ internal static class Program
     private static void AddRoot(List<string> list, string path)
     {
         try { if (Directory.Exists(path)) list.Add(Path.GetFullPath(path)); } catch { }
+    }
+
+    private static void TrySetFocus(AutomationElement element)
+    {
+        try { element.SetFocus(); }
+        catch (InvalidOperationException) { }
+        catch (ElementNotAvailableException) { }
     }
 
     private static bool TryInvokeNativeWebViewer(AutomationElement bazisWindow)
