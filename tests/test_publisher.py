@@ -1,96 +1,76 @@
 from __future__ import annotations
 
-import importlib.util
-import json
-import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-for p in (ROOT / "parser", ROOT / "geometry", ROOT / "app"):
-    sys.path.insert(0, str(p))
-
-from b3d_parser import parse_current_model  # noqa: E402
-from final_geometry import extract_final_meshes  # noqa: E402
-from direct_publisher import publish  # noqa: E402
-
-SAMPLE = ROOT / "samples" / "Стол_3100х750х1300.b3d"
-DIRECT = ROOT / "app" / "direct_publisher.py"
-FINAL_GEOM = ROOT / "geometry" / "final_geometry.py"
+HOST = ROOT / "host" / "B3DPublisherHost"
+PROGRAM = HOST / "Program.cs"
+EXPORTER = HOST / "Viewer3DExporter.cs"
+VRML = HOST / "VrmlParser.cs"
+HTML = HOST / "OfflineHtmlPublisher.cs"
+PROBE = HOST / "B3DHandlerProbe.cs"
+PROJECT = HOST / "B3DPublisherHost.csproj"
 
 
-class DirectPublisherRegressionTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        if not SAMPLE.exists():
-            raise unittest.SkipTest("Reference B3D sample is absent")
+class PublisherProductionPolicyTest(unittest.TestCase):
+    def test_production_consumes_bazis_emitted_final_geometry(self) -> None:
+        for path in (PROGRAM, EXPORTER, VRML, HTML, PROBE, PROJECT):
+            self.assertTrue(path.exists(), path)
 
-    def test_direct_b3d_final_geometry(self) -> None:
-        model, _meta = parse_current_model(SAMPLE)
-        geom = extract_final_meshes(model, 3.0)
-        self.assertEqual(geom["status"], "direct-b3d-final-csg")
-        self.assertEqual(geom["panel_count"], 37)
-        self.assertEqual(geom["errors"], [])
+        program = PROGRAM.read_text(encoding="utf-8")
+        exporter = EXPORTER.read_text(encoding="utf-8")
+        vrml = VRML.read_text(encoding="utf-8")
+        html = HTML.read_text(encoding="utf-8")
+        production = program + exporter + vrml + html + PROBE.read_text(encoding="utf-8") + PROJECT.read_text(encoding="utf-8")
 
-        cuts = [cut for panel in geom["panels"] for cut in panel["cuts"]]
-        self.assertEqual(len(cuts), 36)
-        cut_types = {cut["params"].get("typ") for cut in cuts}
-        self.assertTrue({1, 4, 7}.issubset(cut_types))
+        self.assertIn("Viewer3DExporter.ExportToTemporaryWrl", program)
+        self.assertIn("VrmlParser.Parse", program)
+        self.assertIn("OfflineHtmlPublisher.Publish", program)
+        self.assertIn("Directory.Delete(tempDirectory, true)", program)
+        self.assertIn("Viewer24.exe", exporter)
+        self.assertIn("model.wrl", exporter)
 
-        bounds = geom["bounds"]
-        self.assertIsNotNone(bounds)
-        for actual, expected in zip(bounds["min"], (0.0, 0.0, 0.0)):
-            self.assertAlmostEqual(actual, expected, delta=0.1)
-        for actual, expected in zip(bounds["max"], (3100.0, 750.0, 1300.0)):
-            self.assertAlmostEqual(actual, expected, delta=0.1)
-
-    def test_production_publishes_one_offline_html(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            out = Path(td) / "table.html"
-            output, payload = publish(SAMPLE, out)
-            self.assertEqual(output, out.resolve())
-            self.assertTrue(out.exists())
-            self.assertEqual(payload["format"], "local-view-direct-b3d-2")
-            self.assertEqual(payload["panel_count"], 37)
-
-            html = out.read_text(encoding="utf-8")
-            for token in (
-                "local-view-direct-b3d-2",
-                "Снять выделение",
-                "Escape",
-                "gl.readPixels",
-                "gl.LINES",
-                "Прозрачность",
-                "preserveDrawingBuffer:true",
-            ):
-                self.assertIn(token, html)
-            self.assertNotIn("<script src=", html)
-            self.assertNotIn("http://", html)
-            self.assertNotIn("https://", html)
-            self.assertGreater(len(html), 100_000)
-
-    def test_production_route_has_no_old_bridge(self) -> None:
-        production = DIRECT.read_text(encoding="utf-8") + FINAL_GEOM.read_text(encoding="utf-8")
-        for required in (
-            "parse_current_model",
-            "extract_final_meshes",
-            "decode_contour_blob",
-            "Manifold",
-            "local-view-direct-b3d-2",
+        for token in (
+            "IndexedFaceSet", "coordIndex", "Coordinate", "TextureCoordinate",
+            "texCoordIndex", "Normal", "normalIndex", "ImageTexture", "diffuseColor",
         ):
-            self.assertIn(required, production)
+            self.assertIn(token, vrml)
+
+        # Production host may not reconstruct B3D geometry. Research code is
+        # allowed elsewhere in the repository, but it must not enter this assembly.
         for forbidden in (
-            "Viewer3D",
-            "Viewer24.exe",
-            "VrmlParser",
-            ".wrl",
-            "UploadModelFromStream",
-            "TryInvokePublisherScript",
-            "currentFileData",
-            "WebViewer.dll",
+            "parse_current_model", "extract_final_meshes", "decode_contour_blob",
+            "Manifold", "solid=solid-", "direct_publisher.py", "final_geometry.py",
+            ".obj", ".3ds", ".dae", "UploadModelFromStream", "TryInvokePublisherScript",
+            "currentFileData", "TryInvokeNativeWebViewer", "WebViewer.dll",
         ):
             self.assertNotIn(forbidden, production)
+
+    def test_offline_html_contract_is_preserved(self) -> None:
+        html = HTML.read_text(encoding="utf-8")
+        for token in (
+            "local-view-bazis-viewer3d-wrl-1", "data:", ";base64,",
+            "gl.drawElements", "gl.LINES", "gl.readPixels", "Снять выделение",
+            "Escape", "Прозрачность", "Рёбра",
+        ):
+            self.assertIn(token, html)
+        self.assertIn('html.Contains("http://"', html)
+        self.assertIn('html.Contains("https://"', html)
+        self.assertIn('html.Contains("<script src="', html)
+
+    def test_shell_probe_covers_thumbnail_preview_and_bitness(self) -> None:
+        program = PROGRAM.read_text(encoding="utf-8")
+        probe = PROBE.read_text(encoding="utf-8")
+        self.assertIn("--probe-b3d-handler", program)
+        self.assertIn("B3DHandlerProbe.BuildReport", program)
+        for token in (
+            "E357FCCD-A995-4576-B01F-234630154E96",
+            "8895B1C6-B41F-4C1C-A562-0D564250836F",
+            "InprocServer32", "LocalServer32",
+            "RegistryView.Registry64", "RegistryView.Registry32",
+        ):
+            self.assertIn(token, probe)
 
 
 if __name__ == "__main__":
