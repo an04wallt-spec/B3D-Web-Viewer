@@ -4,8 +4,13 @@ on:
   push:
     paths:
       - 'host/B3DPublisherHost/**'
+      - 'tests/test_publisher.py'
       - '.github/workflows/build-windows-bridge.yml'
+      - 'PUBLISHER_VERSION'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -15,6 +20,16 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      - name: Verify native release contract
+        shell: pwsh
+        run: |
+          $src = Get-Content host/B3DPublisherHost/CfrnOfflineHtmlPublisher.cs -Raw
+          if (Test-Path host/B3DPublisherHost/CompactOfflineHtml.cs) { throw 'Duplicate HTML compactor must not exist' }
+          if ($src -match 'FileAttributes\.ReadOnly') { throw 'Release HTML must not be file-locked' }
+          if ($src -notmatch 'pre-triangulated CFRN geometry only') { throw 'CFRN final-geometry contract is missing' }
+          if ($src -notmatch 'Снять выделение') { throw 'Clear-selection UX is missing' }
+          if ($src -notmatch "e\.key==='Escape'") { throw 'Esc clear-selection UX is missing' }
+          if ($src -notmatch 'cloudRequests = false') { throw 'Offline contract is missing' }
       - name: Publish single-file EXE
         run: >-
           dotnet publish host/B3DPublisherHost/B3DPublisherHost.csproj
@@ -24,9 +39,44 @@ jobs:
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
           -o out
-      - name: Upload EXE
+      - name: Generate SHA-256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash out/B3D-Publisher.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  B3D-Publisher.exe" | Set-Content -Encoding ascii out/SHA256.txt
+          Write-Host "B3D-Publisher.exe SHA256=$hash"
+      - name: Upload release candidate
         uses: actions/upload-artifact@v4
         with:
           name: B3D-Publisher-Windows
-          path: out/B3D-Publisher.exe
+          path: |
+            out/B3D-Publisher.exe
+            out/SHA256.txt
           if-no-files-found: error
+
+  release:
+    if: contains(github.event.head_commit.message, '[publisher-release]')
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: B3D-Publisher-Windows
+          path: release
+      - name: Read version
+        shell: pwsh
+        run: |
+          $version = '${{ github.event.head_commit.message }}' -replace '^.*\[publisher-release\]\s*',''
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Release version is missing from commit message' }
+          "PUBLISHER_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "publisher-$env:PUBLISHER_RELEASE_VERSION"
+          release/B3D-Publisher.exe
+          release/SHA256.txt
+          --target "$env:GITHUB_SHA"
+          --title "B3D Publisher $env:PUBLISHER_RELEASE_VERSION"
+          --notes "Windows x64 self-contained publisher. Production route: captured final pre-triangulated BAZIS/CFRN geometry to one fully offline self-contained HTML. No B3D reconstruction, OBJ/3DS/DAE conversion, cloud dependency, or license bypass."
