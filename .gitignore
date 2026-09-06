@@ -1,8 +1,8 @@
-__pycache__/
-*.py[cod]
-.venv/
-venv/
+*.exe
+*.html
+*.obj
+*.mtl
+*_textures/
 *.log
-model.json
 .DS_Store
 Thumbs.db
