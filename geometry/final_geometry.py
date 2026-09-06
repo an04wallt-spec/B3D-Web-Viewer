@@ -3,7 +3,7 @@
 
 B3D stores panel contours, thickness, transforms and explicit machining
 profiles/trajectories. This module builds the solid and applies those tools
-with manifold booleans. No BAZIS process, Viewer3D, scripts or cloud is used.
+with manifold booleans. Production operates locally from the B3D data itself.
 """
 from __future__ import annotations
 import argparse,json,math,sys
@@ -81,8 +81,6 @@ def _choose_inward_sign(path,outer):
 
 def _sweep_tool(profile,path,closed,outer):
     if len(profile)<3 or len(path)<2:raise B3DError('Cut profile/trajectory is too short')
-    # The sweep topology below is defined for clockwise section loops. BAZIS
-    # serializes the same operation in either winding depending on Front.
     profile=list(profile)
     if polygon_area(profile)>0: profile.reverse()
     prof=[Vec2(-CUT_OUTSIDE_EPS if abs(p.x)<=1e-6 else p.x,p.y) for p in profile]
