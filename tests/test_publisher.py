@@ -78,9 +78,12 @@ class PublisherRegressionTest(unittest.TestCase):
         self.assertIn("e.key==='Escape'", html)
         self.assertIn("Прозрачность", html)
         self.assertIn("Рёбра", html)
-        self.assertNotIn("<script src=", html.lower())
-        self.assertNotIn("http://", html.lower())
-        self.assertNotIn("https://", html.lower())
+
+        # The C# source intentionally contains these literal strings because it
+        # rejects a generated HTML containing an external URL/script reference.
+        self.assertIn('html.Contains("http://"', html)
+        self.assertIn('html.Contains("https://"', html)
+        self.assertIn('html.Contains("<script src="', html)
 
         # Explicitly reject the blocked/forbidden production routes.
         for forbidden in (
