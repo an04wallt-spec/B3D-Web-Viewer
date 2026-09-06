@@ -68,9 +68,8 @@ internal static class VrmlParser
             var packedIndices = new List<uint>(triangles.Count * 3);
             var vertexMap = new Dictionary<VertexKey, uint>();
 
-            for (var triNo = 0; triNo < triangles.Count; triNo++)
+            foreach (var tri in triangles)
             {
-                var tri = triangles[triNo];
                 var faceIndex = tri.FaceIndex;
                 var a = GetPoint(points, tri.A);
                 var b = GetPoint(points, tri.B);
@@ -232,7 +231,7 @@ internal static class VrmlParser
 
     private static string? ReadUrlField(string block)
     {
-        var m = Regex.Match(block, @"\burl\s+(?:\[\s*)?\"(?<u>[^\"]+)\"", RegexOptions.IgnoreCase);
+        var m = Regex.Match(block, "\\burl\\s+(?:\\[\\s*)?\"(?<u>[^\"]+)\"", RegexOptions.IgnoreCase);
         return m.Success ? m.Groups["u"].Value : null;
     }
 
