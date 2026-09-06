@@ -1,5 +1,6 @@
 name: Build Windows B3D Publisher bridge
 
+# Production release: 1.1.0 (scriptless Viewer3D -> temporary VRML -> one offline HTML)
 on:
   push:
     paths:
