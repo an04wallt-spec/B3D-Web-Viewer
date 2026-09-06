@@ -47,7 +47,9 @@ jobs:
             if ($production -match $forbidden) { throw "Forbidden production route found: $forbidden" }
           }
           if ($project -match 'Bazis24FinalMeshPublisher\.js') { throw 'Script bridge remains embedded in production assembly' }
-          if ($html -match '<script\s+src=' -or $html -match 'https?://') { throw 'External dependency detected in HTML publisher' }
+          if ($html -notmatch 'html\.Contains\("http://"' -or $html -notmatch 'html\.Contains\("https://"' -or $html -notmatch 'html\.Contains\("<script src="') {
+            throw 'Runtime offline validation is missing from HTML publisher'
+          }
           $initializers = Get-ChildItem host/B3DPublisherHost/*.cs | Select-String -Pattern '\[ModuleInitializer\]|ProcessExit \+=' -SimpleMatch:$false
           if ($initializers) { throw "Automatic research initializers remain in production host: $($initializers.Path -join ', ')" }
 
