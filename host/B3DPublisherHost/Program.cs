@@ -12,17 +12,39 @@ internal static class Program
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+
+        if (args.Any(a => string.Equals(a, "--probe-b3d-handler", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var report = B3DHandlerProbe.BuildReport();
+                var path = B3DHandlerProbe.SaveReport(report);
+                try { Clipboard.SetText(report); } catch { }
+                Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
+                MessageBox.Show(
+                    "Готов отчёт о реальном Windows-обработчике .b3d.\n\n" + path +
+                    "\n\nОтчёт также скопирован в буфер обмена. Этот режим ничего не конвертирует и не изменяет в БАЗИС.",
+                    "B3D Publisher — handler probe",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "B3D Publisher — handler probe", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            return;
+        }
+
         string? tempDirectory = null;
         try
         {
             var input = ResolveInput(args);
             if (input is null) return;
 
-            // Production route:
-            // B3D -> official BAZIS Viewer3D -> temporary VRML -> one local HTML.
-            // Viewer3D performs the B3D interpretation and final mesh export.
-            // The Publisher never reconstructs B3D geometry and never uses scripts,
-            // OBJ/3DS/DAE, WebViewer cloud, or license bypasses.
+            // NOTE: Viewer3D -> WRL remains here only as the previously released 1.1.x
+            // path while the Windows .b3d handler is being identified. Do not publish
+            // another release from this branch until that handler path is proven on a
+            // real BAZIS 24 workstation.
             tempDirectory = Path.Combine(Path.GetTempPath(), "B3DPublisher", Guid.NewGuid().ToString("N"));
             var wrl = Viewer3DExporter.ExportToTemporaryWrl(input, tempDirectory);
             var model = VrmlParser.Parse(wrl);
@@ -38,8 +60,8 @@ internal static class Program
                 "Готово.\n\n" + output + "\n\n" +
                 $"Треугольников: {model.TriangleCount:N0}\n" +
                 $"Размер HTML: {info.Length:N0} байт\nSHA-256: {sha}\n\n" +
-                "Геометрия получена штатным БАЗИС-Просмотр 3D. WRL был только временным файлом и удалён. " +
-                "Клиенту передаётся один полностью локальный HTML.",
+                "Геометрия получена через прежний экспериментальный Viewer3D-маршрут. " +
+                "Новый релиз этого маршрута не выпускается до завершения исследования Windows-обработчика B3D.",
                 "B3D Publisher",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
