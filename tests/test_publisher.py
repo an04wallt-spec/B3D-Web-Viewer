@@ -12,8 +12,10 @@ for p in (ROOT / "parser", ROOT / "geometry", ROOT / "publisher"):
 from publish import publish  # noqa: E402
 
 SAMPLE = ROOT / "samples" / "Стол_3100х750х1300.b3d"
-NATIVE_PUBLISHER = ROOT / "host" / "B3DPublisherHost" / "CfrnOfflineHtmlPublisher.cs"
-LEGACY_COMPACTOR = ROOT / "host" / "B3DPublisherHost" / "CompactOfflineHtml.cs"
+HOST = ROOT / "host" / "B3DPublisherHost"
+PROGRAM = HOST / "Program.cs"
+BRIDGE = HOST / "Bazis24FinalMeshPublisher.js"
+CSPROJ = HOST / "B3DPublisherHost.csproj"
 
 
 class PublisherRegressionTest(unittest.TestCase):
@@ -22,50 +24,62 @@ class PublisherRegressionTest(unittest.TestCase):
         if not SAMPLE.exists():
             raise unittest.SkipTest("Reference B3D sample is absent")
 
-    def test_autonomous_html_is_created(self) -> None:
-        # Historical viewer regression. The Windows release publisher is tested
-        # separately below and does not use this B3D reconstruction path.
+    def test_legacy_research_viewer_regression(self) -> None:
+        # Historical parser/geometry regression only. It is intentionally NOT
+        # the production B3D-Publisher route.
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "table.html"
             result = publish(SAMPLE, out)
             self.assertTrue(out.exists())
             self.assertEqual(result["panel_count"], 37)
             self.assertEqual(result["geometry_errors"], 0)
-            text = out.read_text(encoding="utf-8")
-            self.assertIn("b3d-offline-view-1", text)
-            self.assertIn("WebGL", text)
-            self.assertNotIn("<script src=", text)
-            self.assertNotIn("https://", text)
-            self.assertNotIn("http://", text)
-            self.assertGreater(out.stat().st_size, SAMPLE.stat().st_size)
-            self.assertLess(out.stat().st_size, 2_000_000)
 
-    def test_windows_release_publisher_contract(self) -> None:
-        self.assertTrue(NATIVE_PUBLISHER.exists())
-        text = NATIVE_PUBLISHER.read_text(encoding="utf-8")
+    def test_production_uses_official_bazis_final_mesh_api(self) -> None:
+        self.assertTrue(PROGRAM.exists())
+        self.assertTrue(BRIDGE.exists())
+        self.assertTrue(CSPROJ.exists())
+        program = PROGRAM.read_text(encoding="utf-8")
+        bridge = BRIDGE.read_text(encoding="utf-8")
+        csproj = CSPROJ.read_text(encoding="utf-8")
 
-        # One direct CFRN -> compact offline HTML path. No second ProcessExit
-        # compactor and no read-only file lock are allowed in the release host.
-        self.assertFalse(LEGACY_COMPACTOR.exists())
-        self.assertEqual(text.count("ProcessExit +="), 1)
-        self.assertNotIn("FileAttributes.ReadOnly", text)
-        self.assertIn("pre-triangulated CFRN geometry only", text)
-        self.assertIn("Convert.ToBase64String(positionBytes)", text)
-        self.assertIn("clientInstallRequired = false", text)
-        self.assertIn("cloudRequests = false", text)
+        # The EXE contains and deploys the official Script API bridge itself.
+        self.assertIn('EmbeddedResource Include="Bazis24FinalMeshPublisher.js"', csproj)
+        self.assertIn("InstallOfficialMeshBridge", program)
+        self.assertIn("TryInvokePublisherScript", program)
+        self.assertIn("ValidatePublishedHtml", program)
 
-        # Established viewer UX and offline self-checks.
-        self.assertIn("Снять выделение", text)
-        self.assertIn("e.key==='Escape'", text)
-        self.assertIn("Прозрачность", text)
-        self.assertIn("Рёбра", text)
-        self.assertIn("html.Contains(\"http://\"", text)
-        self.assertIn("html.Contains(\"https://\"", text)
-        self.assertIn("html.Contains(\"<script src=\"", text)
+        # Geometry comes from already-built BAZIS triangles, not from B3D.
+        for token in (
+            "IsMesh()", "AsMesh()", "TriLists", "surface.Triangles",
+            "Vertex1", "Vertex2", "Vertex3", "Normal1", "Normal2", "Normal3",
+            "TexCoord1", "TexCoord2", "TexCoord3", "ToGlobal", "NToGlobal",
+        ):
+            self.assertIn(token, bridge)
 
-        # Production host must explicitly reject reconstruction/conversion routes.
-        self.assertIn("Geometry reconstruction was deliberately not attempted", text)
-        self.assertIn("OBJ/3DS/DAE conversion", text)
+        # Material/texture data is taken from BAZIS and embedded locally.
+        self.assertIn("MaterialName", bridge)
+        self.assertIn("DiffuseColor", bridge)
+        self.assertIn("PathAbsolute", bridge)
+        self.assertIn(";base64,", bridge)
+
+        # Established viewer UX.
+        self.assertIn("Снять выделение", bridge)
+        self.assertIn("e.key==='Escape'", bridge)
+        self.assertIn("Прозрачность", bridge)
+        self.assertIn("Рёбра", bridge)
+
+        # Forbidden production routes remain absent.
+        self.assertNotIn("ExportModelMeshFormat(", bridge)
+        self.assertNotIn("UploadModelFromStream", program)
+        self.assertNotIn("TryInvokeNativeWebViewer", program)
+        self.assertNotIn("B3D-Native-Capture_", program)
+        self.assertNotIn("Cfrn", program)
+
+    def test_production_host_has_no_automatic_research_initializers(self) -> None:
+        for path in HOST.glob("*.cs"):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("[ModuleInitializer]", text, path.name)
+            self.assertNotIn("ProcessExit +=", text, path.name)
 
 
 if __name__ == "__main__":
