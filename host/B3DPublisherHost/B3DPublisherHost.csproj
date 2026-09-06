@@ -9,7 +9,4 @@
     <AssemblyName>B3D-Publisher</AssemblyName>
     <RootNamespace>B3DPublisherHost</RootNamespace>
   </PropertyGroup>
-  <ItemGroup>
-    <EmbeddedResource Include="Bazis24FinalMeshPublisher.js" />
-  </ItemGroup>
 </Project>
