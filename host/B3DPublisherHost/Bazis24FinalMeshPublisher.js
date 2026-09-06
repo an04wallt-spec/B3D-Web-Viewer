@@ -111,7 +111,8 @@ function extractMesh(obj) {
 
   const objectId = ++nextObjectId;
   const objectName = String(obj.Name || obj.Designation || ('Деталь ' + objectId));
-  let wrote = false;
+  const objectParts = [];
+  const objectPositions = [];
 
   for (let si = 0; si < Number(mesh.TriListsCount); si++) {
     const surface = mesh.TriLists[si];
@@ -140,8 +141,8 @@ function extractMesh(obj) {
       try { materialName = String(material.MaterialName || mesh.MaterialName || materialName); } catch (_) {}
       try { color = colorFromBazis(material.DiffuseColor); } catch (_) {}
     }
-    const edges = featureEdges(positions, 20);
-    parts.push({
+    objectPositions.push(...positions);
+    objectParts.push({
       objectId: objectId,
       name: objectName,
       materialName: materialName,
@@ -150,13 +151,21 @@ function extractMesh(obj) {
       positions: positions,
       normals: normals,
       texcoords: texcoords,
-      edges: edges
+      edges: []
     });
     triangleCount += positions.length / 9;
-    edgeSegmentCount += edges.length / 6;
-    wrote = true;
   }
-  if (wrote) detailCount++;
+
+  if (objectParts.length) {
+    // TTriMesh may be split into TTriangleList surfaces for material assignment.
+    // Compute feature edges across the whole final mesh so coplanar boundaries
+    // between those surfaces do not become fake cabinet edges.
+    const objectEdges = featureEdges(objectPositions, 20);
+    objectParts[0].edges = objectEdges;
+    edgeSegmentCount += objectEdges.length / 6;
+    parts.push(...objectParts);
+    detailCount++;
+  }
 }
 
 function walk(list) {
