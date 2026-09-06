@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'tools/b3d_forensics.py'
+      - 'tools/cut_forensics.py'
       - '.github/workflows/b3d-forensics.yml'
       - 'samples/*.b3d'
   workflow_dispatch:
@@ -18,3 +19,5 @@ jobs:
           python-version: '3.12'
       - name: Inspect reference B3D container
         run: python tools/b3d_forensics.py 'samples/Стол_3100х750х1300.b3d'
+      - name: Dump panel cuts and trajectories
+        run: python tools/cut_forensics.py 'samples/Стол_3100х750х1300.b3d'
