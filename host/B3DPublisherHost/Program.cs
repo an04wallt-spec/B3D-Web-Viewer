@@ -10,6 +10,7 @@ internal static class Program
 {
     private const string ScriptResourceSuffix = "Bazis24FinalMeshPublisher.js";
     private const string InstalledScriptName = "Local View B3D Publisher.js";
+    private const string PayloadFormatMarker = "local-view-bazis24-final-mesh-2";
     private static readonly TimeSpan BazisWindowTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(180);
 
@@ -51,17 +52,9 @@ internal static class Program
             ValidatePublishedHtml(output);
             var info = new FileInfo(output);
             var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(output))).ToLowerInvariant();
-            var receipt = Path.ChangeExtension(output, ".publisher.txt");
-            File.WriteAllText(receipt,
-                "Local View B3D Publisher\r\n" +
-                "Source: " + input + "\r\n" +
-                "Output: " + output + "\r\n" +
-                "Bytes: " + info.Length + "\r\n" +
-                "SHA256: " + sha + "\r\n" +
-                "Geometry source: official BAZIS TTriMesh/TTriangleList/T3DTriangle API\r\n" +
-                "Offline: yes\r\nCloud: no\r\nB3D reconstruction: no\r\nOBJ/3DS/DAE: no\r\n",
-                new UTF8Encoding(false));
 
+            // Production deliverable is intentionally one file only: the local HTML.
+            // The checksum is shown to the operator but no receipt/sidecar file is written.
             Process.Start(new ProcessStartInfo { FileName = Path.GetDirectoryName(output)!, UseShellExecute = true });
             MessageBox.Show(
                 "Готово.\n\n" + output + "\n\n" +
@@ -302,10 +295,12 @@ internal static class Program
         if (!html.Contains("<!doctype html>", StringComparison.OrdinalIgnoreCase) ||
             !html.Contains("Local View B3D", StringComparison.Ordinal) ||
             !html.Contains("<canvas", StringComparison.OrdinalIgnoreCase) ||
+            !html.Contains("<script id=\"data\" type=\"application/json\">", StringComparison.OrdinalIgnoreCase) ||
+            !html.Contains(PayloadFormatMarker, StringComparison.Ordinal) ||
             !html.Contains("Снять выделение", StringComparison.Ordinal) ||
             html.Contains("<script src=", StringComparison.OrdinalIgnoreCase) ||
             html.Contains("http://", StringComparison.OrdinalIgnoreCase) ||
             html.Contains("https://", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Созданный HTML не прошёл проверку автономности/целостности.");
+            throw new InvalidDataException("Созданный HTML не прошёл проверку автономности/целостности финальной mesh-публикации.");
     }
 }
