@@ -10,7 +10,7 @@ internal static class Program
 {
     private const string ScriptResourceSuffix = "Bazis24FinalMeshPublisher.js";
     private const string InstalledScriptName = "Local View B3D Publisher.js";
-    private const string PayloadFormatMarker = "local-view-bazis24-final-mesh-2";
+    private const string PayloadFormatMarker = "local-view-bazis24-final-mesh-3";
     private static readonly TimeSpan BazisWindowTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(180);
 
