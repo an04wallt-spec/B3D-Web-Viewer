@@ -1,0 +1,20 @@
+name: B3D container forensics
+
+on:
+  push:
+    paths:
+      - 'tools/b3d_forensics.py'
+      - '.github/workflows/b3d-forensics.yml'
+      - 'samples/*.b3d'
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Inspect reference B3D container
+        run: python tools/b3d_forensics.py 'samples/Стол_3100х750х1300.b3d'
