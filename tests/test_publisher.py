@@ -1,106 +1,96 @@
 from __future__ import annotations
 
+import importlib.util
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-for p in (ROOT / "parser", ROOT / "geometry", ROOT / "publisher"):
+for p in (ROOT / "parser", ROOT / "geometry", ROOT / "app"):
     sys.path.insert(0, str(p))
 
-from publish import publish  # noqa: E402
+from b3d_parser import parse_current_model  # noqa: E402
+from final_geometry import extract_final_meshes  # noqa: E402
+from direct_publisher import publish  # noqa: E402
 
 SAMPLE = ROOT / "samples" / "Стол_3100х750х1300.b3d"
-HOST = ROOT / "host" / "B3DPublisherHost"
-PROGRAM = HOST / "Program.cs"
-EXPORTER = HOST / "Viewer3DExporter.cs"
-VRML = HOST / "VrmlParser.cs"
-HTML = HOST / "OfflineHtmlPublisher.cs"
-CSPROJ = HOST / "B3DPublisherHost.csproj"
+DIRECT = ROOT / "app" / "direct_publisher.py"
+FINAL_GEOM = ROOT / "geometry" / "final_geometry.py"
 
 
-class PublisherRegressionTest(unittest.TestCase):
+class DirectPublisherRegressionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         if not SAMPLE.exists():
             raise unittest.SkipTest("Reference B3D sample is absent")
 
-    def test_legacy_research_viewer_regression(self) -> None:
-        # Historical parser regression only. Production never uses this parser.
+    def test_direct_b3d_final_geometry(self) -> None:
+        model, _meta = parse_current_model(SAMPLE)
+        geom = extract_final_meshes(model, 3.0)
+        self.assertEqual(geom["status"], "direct-b3d-final-csg")
+        self.assertEqual(geom["panel_count"], 37)
+        self.assertEqual(geom["errors"], [])
+
+        cuts = [cut for panel in geom["panels"] for cut in panel["cuts"]]
+        self.assertEqual(len(cuts), 36)
+        cut_types = {cut["params"].get("typ") for cut in cuts}
+        self.assertTrue({1, 4, 7}.issubset(cut_types))
+
+        bounds = geom["bounds"]
+        self.assertIsNotNone(bounds)
+        for actual, expected in zip(bounds["min"], (0.0, 0.0, 0.0)):
+            self.assertAlmostEqual(actual, expected, delta=0.1)
+        for actual, expected in zip(bounds["max"], (3100.0, 750.0, 1300.0)):
+            self.assertAlmostEqual(actual, expected, delta=0.1)
+
+    def test_production_publishes_one_offline_html(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "table.html"
-            result = publish(SAMPLE, out)
+            output, payload = publish(SAMPLE, out)
+            self.assertEqual(output, out.resolve())
             self.assertTrue(out.exists())
-            self.assertEqual(result["panel_count"], 37)
-            self.assertEqual(result["geometry_errors"], 0)
+            self.assertEqual(payload["format"], "local-view-direct-b3d-2")
+            self.assertEqual(payload["panel_count"], 37)
 
-    def test_production_is_scriptless_viewer3d_pipeline(self) -> None:
-        for path in (PROGRAM, EXPORTER, VRML, HTML, CSPROJ):
-            self.assertTrue(path.exists(), path)
-        program = PROGRAM.read_text(encoding="utf-8")
-        exporter = EXPORTER.read_text(encoding="utf-8")
-        vrml = VRML.read_text(encoding="utf-8")
-        html = HTML.read_text(encoding="utf-8")
-        csproj = CSPROJ.read_text(encoding="utf-8")
-        production = program + exporter + vrml + html + csproj
+            html = out.read_text(encoding="utf-8")
+            for token in (
+                "local-view-direct-b3d-2",
+                "Снять выделение",
+                "Escape",
+                "gl.readPixels",
+                "gl.LINES",
+                "Прозрачность",
+                "preserveDrawingBuffer:true",
+            ):
+                self.assertIn(token, html)
+            self.assertNotIn("<script src=", html)
+            self.assertNotIn("http://", html)
+            self.assertNotIn("https://", html)
+            self.assertGreater(len(html), 100_000)
 
-        # B3D interpretation and mesh creation are delegated to the official
-        # BAZIS Viewer3D utility. WRL is temporary and deleted after packaging.
-        self.assertIn("Viewer3DExporter.ExportToTemporaryWrl", program)
-        self.assertIn("VrmlParser.Parse", program)
-        self.assertIn("OfflineHtmlPublisher.Publish", program)
-        self.assertIn("Directory.Delete(tempDirectory, true)", program)
-        self.assertIn("Viewer24.exe", exporter)
-        self.assertIn("VRML", exporter)
-        self.assertIn("model.wrl", exporter)
-        self.assertIn('FindByAutomationId(dialog, "1136")', exporter)
-        self.assertIn('FindByAutomationId(dialog, "1001")', exporter)
-
-        # Only the official VRML output is interpreted by production.
-        for token in (
-            "IndexedFaceSet", "coordIndex", "Coordinate", "TextureCoordinate",
-            "texCoordIndex", "Normal", "normalIndex", "ImageTexture", "diffuseColor",
+    def test_production_route_has_no_old_bridge(self) -> None:
+        production = DIRECT.read_text(encoding="utf-8") + FINAL_GEOM.read_text(encoding="utf-8")
+        for required in (
+            "parse_current_model",
+            "extract_final_meshes",
+            "decode_contour_blob",
+            "Manifold",
+            "local-view-direct-b3d-2",
         ):
-            self.assertIn(token, vrml)
-
-        # One self-contained HTML with compact binary mesh payload and textures.
-        self.assertIn("local-view-bazis-viewer3d-wrl-1", html)
-        self.assertIn("Float32Base64", html)
-        self.assertIn("IndexBase64", html)
-        self.assertIn(";base64,", html)
-        self.assertIn("FeatureEdges", html)
-        self.assertIn("gl.drawElements", html)
-        self.assertIn("gl.LINES", html)
-        self.assertIn("preserveDrawingBuffer:true", html)
-        self.assertIn("gl.readPixels", html)
-        self.assertIn("Снять выделение", html)
-        self.assertIn("e.key==='Escape'", html)
-        self.assertIn("Прозрачность", html)
-        self.assertIn("Рёбра", html)
-
-        # The C# source intentionally contains these literal strings because it
-        # rejects a generated HTML containing an external URL/script reference.
-        self.assertIn('html.Contains("http://"', html)
-        self.assertIn('html.Contains("https://"', html)
-        self.assertIn('html.Contains("<script src="', html)
-
-        # Explicitly reject the blocked/forbidden production routes.
+            self.assertIn(required, production)
         for forbidden in (
-            "InstallOfficialMeshBridge", "TryInvokePublisherScript", "currentFileData",
-            "UploadModelFromStream", "TryInvokeNativeWebViewer", "B3D-Native-Capture_",
-            "Cfrn", "ExportModelMeshFormat", ".obj", ".3ds", ".dae",
+            "Viewer3D",
+            "Viewer24.exe",
+            "VrmlParser",
+            ".wrl",
+            "UploadModelFromStream",
+            "TryInvokePublisherScript",
+            "currentFileData",
+            "WebViewer.dll",
         ):
             self.assertNotIn(forbidden, production)
-        self.assertNotIn("Bazis24FinalMeshPublisher.js", csproj)
-        self.assertFalse((HOST / "Bazis24FinalMeshPublisher.js").exists())
-        self.assertNotIn(".publisher.txt", program)
-
-    def test_production_host_has_no_automatic_research_initializers(self) -> None:
-        for path in HOST.glob("*.cs"):
-            text = path.read_text(encoding="utf-8")
-            self.assertNotIn("[ModuleInitializer]", text, path.name)
-            self.assertNotIn("ProcessExit +=", text, path.name)
 
 
 if __name__ == "__main__":
