@@ -89,6 +89,13 @@ class PublisherRegressionTest(unittest.TestCase):
         self.assertIn("Прозрачность", bridge)
         self.assertIn("Рёбра", bridge)
 
+        # The production deliverable is exactly one local HTML: no receipt or
+        # other generated sidecar. Integrity metadata stays in the operator UI.
+        self.assertIn('PayloadFormatMarker = "local-view-bazis24-final-mesh-2"', program)
+        self.assertIn('<script id=\\"data\\" type=\\"application/json\\">', program)
+        self.assertNotIn(".publisher.txt", program)
+        self.assertNotIn("File.WriteAllText(receipt", program)
+
         # Offline/self-contained contract and forbidden production routes.
         self.assertIn("<script\\s+src=", bridge)
         self.assertIn("https?:\\/\\/", bridge)
