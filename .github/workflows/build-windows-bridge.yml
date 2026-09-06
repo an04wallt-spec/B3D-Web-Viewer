@@ -20,16 +20,25 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-      - name: Verify native release contract
+      - name: Verify production route
         shell: pwsh
         run: |
-          $src = Get-Content host/B3DPublisherHost/CfrnOfflineHtmlPublisher.cs -Raw
-          if (Test-Path host/B3DPublisherHost/CompactOfflineHtml.cs) { throw 'Duplicate HTML compactor must not exist' }
-          if ($src -match 'FileAttributes\.ReadOnly') { throw 'Release HTML must not be file-locked' }
-          if ($src -notmatch 'pre-triangulated CFRN geometry only') { throw 'CFRN final-geometry contract is missing' }
-          if ($src -notmatch 'Снять выделение') { throw 'Clear-selection UX is missing' }
-          if ($src -notmatch "e\.key==='Escape'") { throw 'Esc clear-selection UX is missing' }
-          if ($src -notmatch 'cloudRequests = false') { throw 'Offline contract is missing' }
+          $program = Get-Content host/B3DPublisherHost/Program.cs -Raw
+          $bridge = Get-Content host/B3DPublisherHost/Bazis24FinalMeshPublisher.js -Raw
+          $project = Get-Content host/B3DPublisherHost/B3DPublisherHost.csproj -Raw
+          if ($project -notmatch 'EmbeddedResource Include="Bazis24FinalMeshPublisher\.js"') { throw 'Official BAZIS mesh bridge is not embedded' }
+          foreach ($token in @('IsMesh\(\)','AsMesh\(\)','TriLists','surface\.Triangles','Vertex1','Vertex2','Vertex3','ToGlobal','NToGlobal','TexCoord1','PathAbsolute')) {
+            if ($bridge -notmatch $token) { throw "Missing official final-mesh API token: $token" }
+          }
+          if ($bridge -match 'ExportModelMeshFormat\(') { throw 'OBJ/mesh export route is forbidden' }
+          if ($program -match 'UploadModelFromStream|TryInvokeNativeWebViewer|B3D-Native-Capture_|Cfrn') { throw 'Research/WebViewer route leaked into production Program.cs' }
+          $initializers = Get-ChildItem host/B3DPublisherHost/*.cs | Select-String -Pattern '\[ModuleInitializer\]|ProcessExit \+=' -SimpleMatch:$false
+          if ($initializers) { throw "Automatic research initializers remain in production host: $($initializers.Path -join ', ')" }
+          if ($bridge -notmatch 'Снять выделение' -or $bridge -notmatch "e\.key==='Escape'") { throw 'Clear-selection UX is missing' }
+          if ($bridge -match '<script\s+src=' -or $bridge -match 'https?://') { throw 'External dependency detected in bridge HTML template' }
+      - name: Check bridge JavaScript syntax
+        shell: pwsh
+        run: node --check host/B3DPublisherHost/Bazis24FinalMeshPublisher.js
       - name: Publish single-file EXE
         run: >-
           dotnet publish host/B3DPublisherHost/B3DPublisherHost.csproj
@@ -79,4 +88,4 @@ jobs:
           release/SHA256.txt
           --target "$env:GITHUB_SHA"
           --title "B3D Publisher $env:PUBLISHER_RELEASE_VERSION"
-          --notes "Windows x64 self-contained publisher. Production route: captured final pre-triangulated BAZIS/CFRN geometry to one fully offline self-contained HTML. No B3D reconstruction, OBJ/3DS/DAE conversion, cloud dependency, or license bypass."
+          --notes "Windows x64 self-contained publisher. Production geometry is read only from the official BAZIS TTriMesh/TTriangleList/T3DTriangle Script API and written to one fully offline self-contained HTML. Materials and browser-supported texture files are embedded where BAZIS exposes them. No B3D reconstruction, OBJ/3DS/DAE conversion, WebViewer cloud dependency, or license bypass."
