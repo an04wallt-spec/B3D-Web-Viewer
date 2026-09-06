@@ -14,7 +14,9 @@ from publish import publish  # noqa: E402
 SAMPLE = ROOT / "samples" / "Стол_3100х750х1300.b3d"
 HOST = ROOT / "host" / "B3DPublisherHost"
 PROGRAM = HOST / "Program.cs"
-BRIDGE = HOST / "Bazis24FinalMeshPublisher.js"
+EXPORTER = HOST / "Viewer3DExporter.cs"
+VRML = HOST / "VrmlParser.cs"
+HTML = HOST / "OfflineHtmlPublisher.cs"
 CSPROJ = HOST / "B3DPublisherHost.csproj"
 
 
@@ -25,8 +27,7 @@ class PublisherRegressionTest(unittest.TestCase):
             raise unittest.SkipTest("Reference B3D sample is absent")
 
     def test_legacy_research_viewer_regression(self) -> None:
-        # Historical parser/geometry regression only. It is intentionally NOT
-        # the production B3D-Publisher route.
+        # Historical parser regression only. Production never uses this parser.
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "table.html"
             result = publish(SAMPLE, out)
@@ -34,86 +35,63 @@ class PublisherRegressionTest(unittest.TestCase):
             self.assertEqual(result["panel_count"], 37)
             self.assertEqual(result["geometry_errors"], 0)
 
-    def test_production_uses_official_bazis_final_mesh_api(self) -> None:
-        self.assertTrue(PROGRAM.exists())
-        self.assertTrue(BRIDGE.exists())
-        self.assertTrue(CSPROJ.exists())
+    def test_production_is_scriptless_viewer3d_pipeline(self) -> None:
+        for path in (PROGRAM, EXPORTER, VRML, HTML, CSPROJ):
+            self.assertTrue(path.exists(), path)
         program = PROGRAM.read_text(encoding="utf-8")
-        bridge = BRIDGE.read_text(encoding="utf-8")
+        exporter = EXPORTER.read_text(encoding="utf-8")
+        vrml = VRML.read_text(encoding="utf-8")
+        html = HTML.read_text(encoding="utf-8")
         csproj = CSPROJ.read_text(encoding="utf-8")
+        production = program + exporter + vrml + html + csproj
 
-        # The EXE contains and deploys the official Script API bridge itself.
-        self.assertIn('EmbeddedResource Include="Bazis24FinalMeshPublisher.js"', csproj)
-        self.assertIn("InstallOfficialMeshBridge", program)
-        self.assertIn("TryInvokePublisherScript", program)
-        self.assertIn("ValidatePublishedHtml", program)
+        # B3D interpretation and mesh creation are delegated to the official
+        # BAZIS Viewer3D utility. WRL is temporary and deleted after packaging.
+        self.assertIn("Viewer3DExporter.ExportToTemporaryWrl", program)
+        self.assertIn("VrmlParser.Parse", program)
+        self.assertIn("OfflineHtmlPublisher.Publish", program)
+        self.assertIn("Directory.Delete(tempDirectory, true)", program)
+        self.assertIn("Viewer24.exe", exporter)
+        self.assertIn("VRML", exporter)
+        self.assertIn("model.wrl", exporter)
+        self.assertIn('FindByAutomationId(dialog, "1136")', exporter)
+        self.assertIn('FindByAutomationId(dialog, "1001")', exporter)
 
-        # Geometry comes from already-built BAZIS triangles, not from B3D.
+        # Only the official VRML output is interpreted by production.
         for token in (
-            "IsMesh()", "AsMesh()", "TriLists", "surface.Triangles",
-            "Vertex1", "Vertex2", "Vertex3", "Normal1", "Normal2", "Normal3",
-            "TexCoord1", "TexCoord2", "TexCoord3", "ToGlobal", "NToGlobal",
+            "IndexedFaceSet", "coordIndex", "Coordinate", "TextureCoordinate",
+            "texCoordIndex", "Normal", "normalIndex", "ImageTexture", "diffuseColor",
         ):
-            self.assertIn(token, bridge)
+            self.assertIn(token, vrml)
 
-        # Material/texture data is taken from BAZIS and embedded locally.
-        self.assertIn("MaterialName", bridge)
-        self.assertIn("DiffuseColor", bridge)
-        self.assertIn("PathAbsolute", bridge)
-        self.assertIn(";base64,", bridge)
+        # One self-contained HTML with compact binary mesh payload and textures.
+        self.assertIn("local-view-bazis-viewer3d-wrl-1", html)
+        self.assertIn("Float32Base64", html)
+        self.assertIn("IndexBase64", html)
+        self.assertIn(";base64,", html)
+        self.assertIn("FeatureEdges", html)
+        self.assertIn("gl.drawElements", html)
+        self.assertIn("gl.LINES", html)
+        self.assertIn("preserveDrawingBuffer:true", html)
+        self.assertIn("gl.readPixels", html)
+        self.assertIn("Снять выделение", html)
+        self.assertIn("e.key==='Escape'", html)
+        self.assertIn("Прозрачность", html)
+        self.assertIn("Рёбра", html)
+        self.assertNotIn("<script src=", html.lower())
+        self.assertNotIn("http://", html.lower())
+        self.assertNotIn("https://", html.lower())
 
-        # Payload compaction may only merge byte-equivalent final vertex records;
-        # position, normal and UV are all part of the key so seams remain intact.
-        self.assertIn("indexFinalVertices", bridge)
-        self.assertIn("Math.fround", bridge)
-        self.assertIn("values.join(',')", bridge)
-        self.assertIn("gl.drawElements", bridge)
-        self.assertIn("gl.ELEMENT_ARRAY_BUFFER", bridge)
-        self.assertIn("OES_element_index_uint", bridge)
-        self.assertIn("local-view-bazis24-final-mesh-3", bridge)
-
-        # Edges are derived only from BAZIS' final triangle topology. Coplanar
-        # triangulation diagonals must not be rendered as cabinet edges.
-        self.assertIn("featureEdges", bridge)
-        self.assertIn("creaseAngleDeg", bridge)
-        self.assertIn("gl.LINES", bridge)
-        self.assertNotIn("gl.LINE_LOOP", bridge)
-
-        # Arbitrary image dimensions must remain valid under the WebGL1 fallback.
-        self.assertIn("isPowerOfTwo", bridge)
-        self.assertIn("gl.CLAMP_TO_EDGE", bridge)
-        self.assertIn("gl.LINEAR_MIPMAP_LINEAR", bridge)
-
-        # Exact click selection must use the depth-tested rendered pixel, then
-        # group all material surfaces belonging to the same BAZIS object.
-        self.assertIn("preserveDrawingBuffer:true", bridge)
-        self.assertIn("gl.readPixels", bridge)
-        self.assertIn("pickMode", bridge)
-        self.assertIn("pickColor", bridge)
-        self.assertIn("objectId", bridge)
-        self.assertIn("selectedObject", bridge)
-
-        # Established viewer UX.
-        self.assertIn("Снять выделение", bridge)
-        self.assertIn("e.key==='Escape'", bridge)
-        self.assertIn("Прозрачность", bridge)
-        self.assertIn("Рёбра", bridge)
-
-        # The production deliverable is exactly one local HTML: no receipt or
-        # other generated sidecar. Integrity metadata stays in the operator UI.
-        self.assertIn('PayloadFormatMarker = "local-view-bazis24-final-mesh-3"', program)
-        self.assertIn('<script id=\\"data\\" type=\\"application/json\\">', program)
+        # Explicitly reject the blocked/forbidden production routes.
+        for forbidden in (
+            "InstallOfficialMeshBridge", "TryInvokePublisherScript", "currentFileData",
+            "UploadModelFromStream", "TryInvokeNativeWebViewer", "B3D-Native-Capture_",
+            "Cfrn", "ExportModelMeshFormat", ".obj", ".3ds", ".dae",
+        ):
+            self.assertNotIn(forbidden, production)
+        self.assertNotIn("Bazis24FinalMeshPublisher.js", csproj)
+        self.assertFalse((HOST / "Bazis24FinalMeshPublisher.js").exists())
         self.assertNotIn(".publisher.txt", program)
-        self.assertNotIn("File.WriteAllText(receipt", program)
-
-        # Offline/self-contained contract and forbidden production routes.
-        self.assertIn("<script\\s+src=", bridge)
-        self.assertIn("https?:\\/\\/", bridge)
-        self.assertNotIn("ExportModelMeshFormat(", bridge)
-        self.assertNotIn("UploadModelFromStream", program)
-        self.assertNotIn("TryInvokeNativeWebViewer", program)
-        self.assertNotIn("B3D-Native-Capture_", program)
-        self.assertNotIn("Cfrn", program)
 
     def test_production_host_has_no_automatic_research_initializers(self) -> None:
         for path in HOST.glob("*.cs"):
