@@ -1,9 +1,6 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO;
+using System.Reflection;
 using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Windows.Automation;
 using System.Windows.Forms;
 
@@ -11,119 +8,72 @@ namespace B3DPublisherHost;
 
 internal static class Program
 {
-    private static readonly TimeSpan UiTimeout = TimeSpan.FromSeconds(90);
-    private static readonly ConcurrentDictionary<string, byte> Changed = new(StringComparer.OrdinalIgnoreCase);
-
-    private static readonly string[] NativeBridgeTerms =
-    {
-        "WebViewer", "UploadModelFromStream", "InitializeWebViewerDLL", "FinalizeWebViewerDLL",
-        "GetStreamFromLibEvent", "TGetStreamFromLibEvent", "FGetStreamFromLibEvent",
-        "LibKernel3D", "CFRN", "cfrn", "TStream", "TMemoryStream",
-        "mesh", "Mesh", "triangle", "Triangle", "triang", "Triang", "vertex", "Vertex",
-        "facet", "Facet", "tessell", "Tessell", "polygon", "Polygon", "polyhedron", "Polyhedron",
-        "Export", "export", "Save", "save", "Serialize", "serialize", "Model", "model"
-    };
+    private const string ScriptResourceSuffix = "Bazis24FinalMeshPublisher.js";
+    private const string InstalledScriptName = "Local View B3D Publisher.js";
+    private static readonly TimeSpan BazisWindowTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan PublishTimeout = TimeSpan.FromSeconds(180);
 
     [STAThread]
     private static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
-
         try
         {
             var input = ResolveInput(args);
             if (input is null) return;
 
-            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-            var captureDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-                "B3D-Native-Capture_" + stamp);
-            Directory.CreateDirectory(captureDir);
+            // Production route is deliberately narrow:
+            // BAZIS final TTriMesh -> official Script API -> one local HTML.
+            // No B3D parsing/reconstruction, no OBJ/3DS/DAE, no WebViewer cloud.
+            var installedScripts = InstallOfficialMeshBridge();
+            if (installedScripts.Count == 0)
+                throw new InvalidOperationException("Не удалось установить официальный mesh-bridge в папку скриптов БАЗИС.");
 
-            var webViewerDll = FindWebViewerDll();
-            var bazisRoot = FindBazisRoot(webViewerDll);
-            var discovery = DiscoverNativeBridge(bazisRoot);
-            File.WriteAllText(
-                Path.Combine(captureDir, "native-bridge-discovery.json"),
-                JsonSerializer.Serialize(discovery, new JsonSerializerOptions { WriteIndented = true }),
-                Encoding.UTF8);
-
-            WriteStatus(captureDir, new
-            {
-                input,
-                started = DateTime.Now,
-                webViewerDll,
-                bazisRoot,
-                mode = "BAZIS native final-geometry bridge discovery + WebViewer black-box capture",
-                note = "No B3D geometry reconstruction and no OBJ/3DS/DAE route are used. The discovery stage only inventories public PE metadata and embedded identifiers from the installed BAZIS binaries."
-            });
+            var output = GetExpectedOutputPath(input);
+            var previousWrite = File.Exists(output) ? File.GetLastWriteTimeUtc(output) : DateTime.MinValue;
+            var started = DateTime.UtcNow;
 
             OpenWithBazis(input);
-            var bazisWindow = WaitForBazisWindow(Path.GetFileNameWithoutExtension(input), UiTimeout);
-            if (bazisWindow is null)
-                throw new InvalidOperationException("Не найдено окно БАЗИС после открытия B3D.");
+            var window = WaitForBazisWindow(Path.GetFileNameWithoutExtension(input), BazisWindowTimeout)
+                ?? throw new InvalidOperationException("Не найдено окно БАЗИС после открытия модели.");
 
-            var roots = BuildWatchRoots();
-            using var watchers = new WatcherSet(roots, captureDir);
-            watchers.Start();
-
-            TrySetFocus(bazisWindow);
-            var invoked = TryInvokeNativeWebViewer(bazisWindow);
-
-            if (!invoked)
+            TrySetFocus(window);
+            if (!TryInvokePublisherScript(window, TimeSpan.FromSeconds(12)))
             {
-                MessageBox.Show(
-                    "Publisher уже собрал карту штатных модулей БАЗИС и начал наблюдение за локальными файлами.\n\n" +
-                    "Если команда «Веб-Просмотр» у вас доступна — вызовите её обычным способом. Если она заблокирована техсопровождением, просто нажмите OK: отчёт native-bridge-discovery.json всё равно уже создан.\n\n" +
-                    "Никакого OBJ/3DS/DAE и реконструкции B3D здесь нет.",
-                    "B3D Publisher",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-            else
-            {
-                MessageBox.Show(
-                    "Штатная команда WebViewer в БАЗИСе запущена автоматически.\n\n" +
-                    "Дождитесь окончания операции в БАЗИСе и нажмите OK здесь.",
-                    "B3D Publisher",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                throw new InvalidOperationException(
+                    "БАЗИС не предоставил доступ к команде «Local View B3D Publisher» в меню скриптов. " +
+                    "Publisher не обходит ограничения лицензии и не переключается на реконструкцию B3D или облачный WebViewer.");
             }
 
-            Thread.Sleep(1500);
-            watchers.Stop();
+            if (!WaitForPublishedHtml(output, previousWrite, started, PublishTimeout))
+                throw new TimeoutException("БАЗИС не создал итоговый HTML в ожидаемый срок.");
 
-            var copied = CopyCapturedFiles(captureDir);
-            var report = new
-            {
-                input,
-                finished = DateTime.Now,
-                webViewerDll,
-                bazisRoot,
-                commandInvokedAutomatically = invoked,
-                nativeDiscoveryFile = Path.Combine(captureDir, "native-bridge-discovery.json"),
-                nativeDiscoveryModules = discovery.modules.Count,
-                nativeDiscoveryHighValueHits = discovery.highValueHits,
-                watchRoots = roots,
-                changedCount = Changed.Count,
-                copiedCount = copied.Count,
-                copied
-            };
-            File.WriteAllText(
-                Path.Combine(captureDir, "capture-report.json"),
-                JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }),
-                Encoding.UTF8);
+            ValidatePublishedHtml(output);
+            var info = new FileInfo(output);
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(output))).ToLowerInvariant();
+            var receipt = Path.ChangeExtension(output, ".publisher.txt");
+            File.WriteAllText(receipt,
+                "Local View B3D Publisher\r\n" +
+                "Source: " + input + "\r\n" +
+                "Output: " + output + "\r\n" +
+                "Bytes: " + info.Length + "\r\n" +
+                "SHA256: " + sha + "\r\n" +
+                "Geometry source: official BAZIS TTriMesh/TTriangleList/T3DTriangle API\r\n" +
+                "Offline: yes\r\nCloud: no\r\nB3D reconstruction: no\r\nOBJ/3DS/DAE: no\r\n",
+                new UTF8Encoding(false));
 
-            Process.Start(new ProcessStartInfo { FileName = captureDir, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo { FileName = Path.GetDirectoryName(output)!, UseShellExecute = true });
             MessageBox.Show(
-                $"Этап Publisher завершён.\n\nКандидатов штатного моста: {discovery.highValueHits.Count}\nИзменённых файлов: {Changed.Count}\nСкопировано файлов: {copied.Count}\n\nПапка открыта на рабочем столе.",
+                "Готово.\n\n" + output + "\n\n" +
+                $"Размер: {info.Length:N0} байт\nSHA-256: {sha}\n\n" +
+                "HTML полностью локальный; клиенту ничего устанавливать не требуется.",
                 "B3D Publisher",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.ToString(), "B3D Publisher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(ex.Message, "B3D Publisher", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -155,6 +105,58 @@ internal static class Program
             throw new ArgumentException("Нужен файл .b3d.");
     }
 
+    private static string GetExpectedOutputPath(string input)
+    {
+        var dir = Path.GetDirectoryName(input)!;
+        var name = Path.GetFileNameWithoutExtension(input);
+        foreach (var ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
+        return Path.Combine(dir, name + "_просмотр.html");
+    }
+
+    private static List<string> InstallOfficialMeshBridge()
+    {
+        var script = ReadEmbeddedScript();
+        var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var destinations = new List<string>();
+
+        // BAZIS documentation uses Documents\BazisX\Scripts. Prefer Bazis24,
+        // but also update existing versioned BAZIS script folders without
+        // requiring a separate installer.
+        var roots = new List<string> { Path.Combine(docs, "Bazis24") };
+        try
+        {
+            roots.AddRange(Directory.EnumerateDirectories(docs, "Bazis*", SearchOption.TopDirectoryOnly));
+        }
+        catch { }
+
+        foreach (var root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var scripts = Path.Combine(root, "Scripts");
+                if (!Directory.Exists(root) && !root.EndsWith("Bazis24", StringComparison.OrdinalIgnoreCase)) continue;
+                Directory.CreateDirectory(scripts);
+                var dest = Path.Combine(scripts, InstalledScriptName);
+                File.WriteAllText(dest, script, new UTF8Encoding(false));
+                destinations.Add(dest);
+            }
+            catch { }
+        }
+        return destinations;
+    }
+
+    private static string ReadEmbeddedScript()
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        var resource = asm.GetManifestResourceNames()
+            .FirstOrDefault(n => n.EndsWith(ScriptResourceSuffix, StringComparison.OrdinalIgnoreCase));
+        if (resource is null) throw new InvalidOperationException("В B3D-Publisher.exe отсутствует встроенный mesh-bridge.");
+        using var stream = asm.GetManifestResourceStream(resource)
+            ?? throw new InvalidOperationException("Не удалось открыть встроенный mesh-bridge.");
+        using var reader = new StreamReader(stream, Encoding.UTF8, true);
+        return reader.ReadToEnd();
+    }
+
     private static void OpenWithBazis(string b3dPath)
     {
         Process.Start(new ProcessStartInfo
@@ -163,170 +165,6 @@ internal static class Program
             UseShellExecute = true,
             WorkingDirectory = Path.GetDirectoryName(b3dPath)!
         });
-    }
-
-    private static string? FindWebViewerDll()
-    {
-        foreach (var process in Process.GetProcesses())
-        {
-            try
-            {
-                if (!(process.ProcessName.Contains("bazis", StringComparison.OrdinalIgnoreCase) ||
-                      (process.MainWindowTitle ?? "").Contains("БАЗИС", StringComparison.OrdinalIgnoreCase))) continue;
-                foreach (ProcessModule m in process.Modules)
-                    if (string.Equals(Path.GetFileName(m.FileName), "WebViewer.dll", StringComparison.OrdinalIgnoreCase))
-                        return m.FileName;
-            }
-            catch { }
-        }
-
-        var candidates = new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "BazisSoft", "Bazis", "WebViewer.dll"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "BazisSoft", "Bazis", "WebViewer.dll")
-        };
-        return candidates.FirstOrDefault(File.Exists);
-    }
-
-    private static string? FindBazisRoot(string? webViewerDll)
-    {
-        if (!string.IsNullOrWhiteSpace(webViewerDll)) return Path.GetDirectoryName(webViewerDll);
-        var candidates = new[]
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "BazisSoft", "Bazis"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "BazisSoft", "Bazis")
-        };
-        return candidates.FirstOrDefault(Directory.Exists);
-    }
-
-    private sealed record NativeModuleHit(string path, long size, string? version, List<string> identifiers, List<string> references);
-    private sealed record NativeBridgeDiscovery(DateTime time, string? bazisRoot, List<NativeModuleHit> modules, List<object> highValueHits);
-
-    private static NativeBridgeDiscovery DiscoverNativeBridge(string? bazisRoot)
-    {
-        var modules = new List<NativeModuleHit>();
-        var high = new List<object>();
-        if (string.IsNullOrWhiteSpace(bazisRoot) || !Directory.Exists(bazisRoot))
-            return new NativeBridgeDiscovery(DateTime.Now, bazisRoot, modules, high);
-
-        var files = Directory.EnumerateFiles(bazisRoot, "*.*", SearchOption.TopDirectoryOnly)
-            .Where(p => p.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        foreach (var path in files)
-        {
-            try
-            {
-                var fi = new FileInfo(path);
-                if (fi.Length <= 0 || fi.Length > 512L * 1024 * 1024) continue;
-                var bytes = File.ReadAllBytes(path);
-                var ascii = Encoding.ASCII.GetString(bytes);
-                var unicode = Encoding.Unicode.GetString(bytes);
-
-                var ids = NativeBridgeTerms
-                    .Where(term => ascii.Contains(term, StringComparison.Ordinal) || unicode.Contains(term, StringComparison.Ordinal))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (ids.Count == 0) continue;
-
-                var refs = ExtractInterestingIdentifiers(ascii)
-                    .Concat(ExtractInterestingIdentifiers(unicode))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                    .Take(400)
-                    .ToList();
-
-                var ver = FileVersionInfo.GetVersionInfo(path).FileVersion;
-                modules.Add(new NativeModuleHit(path, fi.Length, ver, ids, refs));
-
-                var exact = ids.Where(x =>
-                    x.Equals("UploadModelFromStream", StringComparison.OrdinalIgnoreCase) ||
-                    x.Equals("InitializeWebViewerDLL", StringComparison.OrdinalIgnoreCase) ||
-                    x.Equals("GetStreamFromLibEvent", StringComparison.OrdinalIgnoreCase) ||
-                    x.Equals("LibKernel3D", StringComparison.OrdinalIgnoreCase) ||
-                    x.Equals("CFRN", StringComparison.OrdinalIgnoreCase)).ToArray();
-                if (exact.Length > 0)
-                    high.Add(new { module = path, exact, related = refs.Take(80).ToArray() });
-            }
-            catch { }
-        }
-
-        modules = modules.OrderByDescending(m => Score(m.identifiers)).ThenBy(m => m.path, StringComparer.OrdinalIgnoreCase).ToList();
-        return new NativeBridgeDiscovery(DateTime.Now, bazisRoot, modules, high);
-    }
-
-    private static int Score(IEnumerable<string> ids)
-    {
-        var set = ids.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var score = set.Count;
-        foreach (var key in new[] { "UploadModelFromStream", "GetStreamFromLibEvent", "InitializeWebViewerDLL", "LibKernel3D", "CFRN", "mesh", "triangle", "tessell" })
-            if (set.Contains(key)) score += 20;
-        return score;
-    }
-
-    private static IEnumerable<string> ExtractInterestingIdentifiers(string text)
-    {
-        var rx = new Regex(@"[A-Za-z_][A-Za-z0-9_:.@?$<>~-]{4,120}", RegexOptions.Compiled);
-        foreach (Match m in rx.Matches(text))
-        {
-            var s = m.Value;
-            if (NativeBridgeTerms.Any(t => s.Contains(t, StringComparison.OrdinalIgnoreCase))) yield return s;
-        }
-    }
-
-    private static List<string> BuildWatchRoots()
-    {
-        var list = new List<string>();
-        AddRoot(list, Path.GetTempPath());
-        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BazisSoft"));
-        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BazisSoft"));
-        AddRoot(list, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Bazis"));
-        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    private static void AddRoot(List<string> list, string path)
-    {
-        try { if (Directory.Exists(path)) list.Add(Path.GetFullPath(path)); } catch { }
-    }
-
-    private static void TrySetFocus(AutomationElement element)
-    {
-        try { element.SetFocus(); }
-        catch (InvalidOperationException) { }
-        catch (ElementNotAvailableException) { }
-    }
-
-    private static bool TryInvokeNativeWebViewer(AutomationElement bazisWindow)
-    {
-        try
-        {
-            var all = bazisWindow.FindAll(TreeScope.Descendants, Condition.TrueCondition);
-            foreach (AutomationElement e in all)
-            {
-                var name = e.Current.Name ?? string.Empty;
-                var hit = name.Contains("Веб-Просмотр", StringComparison.OrdinalIgnoreCase) ||
-                          name.Contains("Веб просмотр", StringComparison.OrdinalIgnoreCase) ||
-                          name.Contains("WebViewer", StringComparison.OrdinalIgnoreCase) ||
-                          (name.Contains("Веб", StringComparison.OrdinalIgnoreCase) && name.Contains("Просмотр", StringComparison.OrdinalIgnoreCase));
-                if (!hit) continue;
-
-                if (e.TryGetCurrentPattern(InvokePattern.Pattern, out var ip))
-                {
-                    ((InvokePattern)ip).Invoke();
-                    return true;
-                }
-                if (e.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var ep))
-                {
-                    ((ExpandCollapsePattern)ep).Expand();
-                    Thread.Sleep(300);
-                    return true;
-                }
-            }
-        }
-        catch { }
-        return false;
     }
 
     private static AutomationElement? WaitForBazisWindow(string modelName, TimeSpan timeout)
@@ -354,112 +192,120 @@ internal static class Program
         return null;
     }
 
-    private static List<object> CopyCapturedFiles(string captureDir)
+    private static void TrySetFocus(AutomationElement element)
     {
-        var copied = new List<object>();
-        var payloadDir = Path.Combine(captureDir, "payload-candidates");
-        Directory.CreateDirectory(payloadDir);
-        long total = 0;
-        var index = 0;
+        try { element.SetFocus(); } catch { }
+    }
 
-        foreach (var source in Changed.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+    private static bool TryInvokePublisherScript(AutomationElement bazisWindow, TimeSpan timeout)
+    {
+        var sw = Stopwatch.StartNew();
+        var expandedScriptsMenu = false;
+        while (sw.Elapsed < timeout)
         {
             try
             {
-                if (!File.Exists(source)) continue;
-                if (source.StartsWith(captureDir, StringComparison.OrdinalIgnoreCase)) continue;
+                // First try visible descendants of the BAZIS main window.
+                if (TryInvokeNamedElement(bazisWindow, InstalledScriptName) ||
+                    TryInvokeNamedElement(bazisWindow, Path.GetFileNameWithoutExtension(InstalledScriptName)))
+                    return true;
 
-                var fi = new FileInfo(source);
-                if (fi.Length < 256 || fi.Length > 512L * 1024 * 1024) continue;
-                if (total + fi.Length > 1024L * 1024 * 1024) break;
-
-                var ext = Path.GetExtension(source);
-                var safe = MakeSafeFileName(Path.GetFileNameWithoutExtension(source));
-                var dest = Path.Combine(payloadDir, $"{index++:D4}_{safe}{ext}");
-                File.Copy(source, dest, true);
-                total += fi.Length;
-
-                copied.Add(new
+                if (!expandedScriptsMenu)
                 {
-                    source,
-                    copy = dest,
-                    size = fi.Length,
-                    modified = fi.LastWriteTime
-                });
+                    var descendants = bazisWindow.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+                    foreach (AutomationElement e in descendants)
+                    {
+                        var name = e.Current.Name ?? string.Empty;
+                        if (!name.Equals("Скрипты", StringComparison.OrdinalIgnoreCase) &&
+                            !name.Contains("Скрипт", StringComparison.OrdinalIgnoreCase)) continue;
+
+                        if (e.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expand))
+                        {
+                            ((ExpandCollapsePattern)expand).Expand();
+                            expandedScriptsMenu = true;
+                            break;
+                        }
+                        if (e.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke))
+                        {
+                            ((InvokePattern)invoke).Invoke();
+                            expandedScriptsMenu = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Popup menu items are often children of the desktop, not the BAZIS window.
+                if (TryInvokeNamedElement(AutomationElement.RootElement, InstalledScriptName) ||
+                    TryInvokeNamedElement(AutomationElement.RootElement, Path.GetFileNameWithoutExtension(InstalledScriptName)))
+                    return true;
             }
             catch { }
+            Thread.Sleep(350);
         }
-        return copied;
+        return false;
     }
 
-    private static string MakeSafeFileName(string name)
+    private static bool TryInvokeNamedElement(AutomationElement root, string expected)
     {
-        foreach (var ch in Path.GetInvalidFileNameChars()) name = name.Replace(ch, '_');
-        if (name.Length > 80) name = name[..80];
-        return string.IsNullOrWhiteSpace(name) ? "file" : name;
-    }
-
-    private static void WriteStatus(string captureDir, object obj)
-    {
-        File.WriteAllText(
-            Path.Combine(captureDir, "start-info.json"),
-            JsonSerializer.Serialize(obj, new JsonSerializerOptions { WriteIndented = true }),
-            Encoding.UTF8);
-    }
-
-    private sealed class WatcherSet : IDisposable
-    {
-        private readonly List<FileSystemWatcher> _watchers = new();
-        private readonly string _captureDir;
-
-        public WatcherSet(IEnumerable<string> roots, string captureDir)
+        try
         {
-            _captureDir = captureDir;
-            foreach (var root in roots)
+            var all = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+            foreach (AutomationElement e in all)
             {
-                try
+                var name = (e.Current.Name ?? string.Empty).Trim();
+                if (!name.Equals(expected, StringComparison.OrdinalIgnoreCase) &&
+                    !name.Contains(expected, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!e.Current.IsEnabled) continue;
+                if (e.TryGetCurrentPattern(InvokePattern.Pattern, out var invoke))
                 {
-                    var w = new FileSystemWatcher(root)
-                    {
-                        IncludeSubdirectories = true,
-                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-                        EnableRaisingEvents = false
-                    };
-                    w.Created += OnChanged;
-                    w.Changed += OnChanged;
-                    w.Renamed += OnRenamed;
-                    _watchers.Add(w);
+                    ((InvokePattern)invoke).Invoke();
+                    return true;
                 }
-                catch { }
+                if (e.TryGetCurrentPattern(SelectionItemPattern.Pattern, out var select))
+                {
+                    ((SelectionItemPattern)select).Select();
+                    return true;
+                }
             }
         }
+        catch { }
+        return false;
+    }
 
-        public void Start()
+    private static bool WaitForPublishedHtml(string output, DateTime oldWrite, DateTime started, TimeSpan timeout)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed < timeout)
         {
-            Changed.Clear();
-            foreach (var w in _watchers) w.EnableRaisingEvents = true;
+            try
+            {
+                if (File.Exists(output))
+                {
+                    var fi = new FileInfo(output);
+                    if (fi.Length > 1024 && fi.LastWriteTimeUtc > oldWrite && fi.LastWriteTimeUtc >= started.AddSeconds(-2))
+                    {
+                        // Wait until the writer has released the file.
+                        using var s = File.Open(output, FileMode.Open, FileAccess.Read, FileShare.None);
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            Thread.Sleep(300);
         }
+        return false;
+    }
 
-        public void Stop()
-        {
-            foreach (var w in _watchers) w.EnableRaisingEvents = false;
-        }
-
-        private void OnChanged(object sender, FileSystemEventArgs e)
-        {
-            if (e.FullPath.StartsWith(_captureDir, StringComparison.OrdinalIgnoreCase)) return;
-            Changed.TryAdd(e.FullPath, 0);
-        }
-
-        private void OnRenamed(object sender, RenamedEventArgs e)
-        {
-            if (e.FullPath.StartsWith(_captureDir, StringComparison.OrdinalIgnoreCase)) return;
-            Changed.TryAdd(e.FullPath, 0);
-        }
-
-        public void Dispose()
-        {
-            foreach (var w in _watchers) w.Dispose();
-        }
+    private static void ValidatePublishedHtml(string output)
+    {
+        var html = File.ReadAllText(output, Encoding.UTF8);
+        if (!html.Contains("<!doctype html>", StringComparison.OrdinalIgnoreCase) ||
+            !html.Contains("Local View B3D", StringComparison.Ordinal) ||
+            !html.Contains("<canvas", StringComparison.OrdinalIgnoreCase) ||
+            !html.Contains("Снять выделение", StringComparison.Ordinal) ||
+            html.Contains("<script src=", StringComparison.OrdinalIgnoreCase) ||
+            html.Contains("http://", StringComparison.OrdinalIgnoreCase) ||
+            html.Contains("https://", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Созданный HTML не прошёл проверку автономности/целостности.");
     }
 }
