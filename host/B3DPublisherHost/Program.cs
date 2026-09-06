@@ -41,10 +41,11 @@ internal static class Program
             var input = ResolveInput(args);
             if (input is null) return;
 
-            // NOTE: Viewer3D -> WRL remains here only as the previously released 1.1.x
-            // path while the Windows .b3d handler is being identified. Do not publish
-            // another release from this branch until that handler path is proven on a
-            // real BAZIS 24 workstation.
+            // Production geometry source: the official BAZIS Viewer3D utility opens
+            // the B3D model and saves the currently loaded 3D document as VRML.
+            // We consume that BAZIS-emitted mesh only; no B3D geometry reconstruction
+            // is performed. The temporary WRL is deleted after the self-contained HTML
+            // payload has been produced.
             tempDirectory = Path.Combine(Path.GetTempPath(), "B3DPublisher", Guid.NewGuid().ToString("N"));
             var wrl = Viewer3DExporter.ExportToTemporaryWrl(input, tempDirectory);
             var model = VrmlParser.Parse(wrl);
@@ -60,8 +61,8 @@ internal static class Program
                 "Готово.\n\n" + output + "\n\n" +
                 $"Треугольников: {model.TriangleCount:N0}\n" +
                 $"Размер HTML: {info.Length:N0} байт\nSHA-256: {sha}\n\n" +
-                "Геометрия получена через прежний экспериментальный Viewer3D-маршрут. " +
-                "Новый релиз этого маршрута не выпускается до завершения исследования Windows-обработчика B3D.",
+                "Геометрия получена штатным БАЗИС-Просмотр 3D и упакована в один автономный HTML. " +
+                "Временный VRML используется только внутри Publisher и после публикации удаляется.",
                 "B3D Publisher",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
