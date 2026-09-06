@@ -5,6 +5,9 @@ on:
     paths:
       - 'tools/b3d_forensics.py'
       - 'tools/cut_forensics.py'
+      - 'geometry/final_geometry.py'
+      - 'geometry/geometry.py'
+      - 'parser/b3d_parser.py'
       - '.github/workflows/b3d-forensics.yml'
       - 'samples/*.b3d'
   workflow_dispatch:
@@ -17,7 +20,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install CSG kernel
+        run: python -m pip install --disable-pip-version-check numpy manifold3d
       - name: Inspect reference B3D container
         run: python tools/b3d_forensics.py 'samples/Стол_3100х750х1300.b3d'
       - name: Dump panel cuts and trajectories
         run: python tools/cut_forensics.py 'samples/Стол_3100х750х1300.b3d'
+      - name: Build final geometry directly from B3D
+        run: python geometry/final_geometry.py 'samples/Стол_3100х750х1300.b3d' -o /tmp/final.json
+      - name: Validate final geometry
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('/tmp/final.json',encoding='utf-8'))
+          assert d['status']=='direct-b3d-final-csg'
+          assert d['panel_count']==37, d['panel_count']
+          assert not d['errors'], d['errors']
+          assert sum(len(p['mesh']['triangles']) for p in d['panels']) > 400
+          cuts=[c for p in d['panels'] for c in p['cuts']]
+          assert any(c['params'].get('typ')==1 for c in cuts)
+          assert any(c['params'].get('typ')==4 for c in cuts)
+          assert any(c['params'].get('typ')==7 for c in cuts)
+          print('validated panels=',d['panel_count'],'cuts=',len(cuts),'triangles=',sum(len(p['mesh']['triangles']) for p in d['panels']))
+          PY
