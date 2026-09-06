@@ -24,21 +24,33 @@ jobs:
         shell: pwsh
         run: |
           $program = Get-Content host/B3DPublisherHost/Program.cs -Raw
-          $bridge = Get-Content host/B3DPublisherHost/Bazis24FinalMeshPublisher.js -Raw
+          $exporter = Get-Content host/B3DPublisherHost/Viewer3DExporter.cs -Raw
+          $parser = Get-Content host/B3DPublisherHost/VrmlParser.cs -Raw
+          $html = Get-Content host/B3DPublisherHost/OfflineHtmlPublisher.cs -Raw
           $project = Get-Content host/B3DPublisherHost/B3DPublisherHost.csproj -Raw
-          if ($project -notmatch 'EmbeddedResource Include="Bazis24FinalMeshPublisher\.js"') { throw 'Official BAZIS mesh bridge is not embedded' }
-          foreach ($token in @('IsMesh\(\)','AsMesh\(\)','TriLists','surface\.Triangles','Vertex1','Vertex2','Vertex3','ToGlobal','NToGlobal','TexCoord1','PathAbsolute')) {
-            if ($bridge -notmatch $token) { throw "Missing official final-mesh API token: $token" }
+
+          foreach ($token in @('Viewer3DExporter.ExportToTemporaryWrl','VrmlParser.Parse','OfflineHtmlPublisher.Publish','local-view-bazis-viewer3d-wrl-1')) {
+            if ($program -notmatch [regex]::Escape($token)) { throw "Missing Viewer3D production token: $token" }
           }
-          if ($bridge -match 'ExportModelMeshFormat\(') { throw 'OBJ/mesh export route is forbidden' }
-          if ($program -match 'UploadModelFromStream|TryInvokeNativeWebViewer|B3D-Native-Capture_|Cfrn') { throw 'Research/WebViewer route leaked into production Program.cs' }
+          foreach ($token in @('Viewer24.exe','Viewer3D','\.wrl','VRML','1136','1001')) {
+            if ($exporter -notmatch $token) { throw "Missing official Viewer3D export token: $token" }
+          }
+          foreach ($token in @('IndexedFaceSet','coordIndex','TextureCoordinate','texCoordIndex','ImageTexture','diffuseColor')) {
+            if ($parser -notmatch $token) { throw "Missing VRML parser token: $token" }
+          }
+          foreach ($token in @('data:',';base64,','gl\.drawElements','gl\.LINES','gl\.readPixels','Снять выделение','Escape','Прозрачность','Рёбра')) {
+            if ($html -notmatch $token) { throw "Missing offline viewer token: $token" }
+          }
+
+          $production = $program + $exporter + $parser + $html + $project
+          foreach ($forbidden in @('InstallOfficialMeshBridge','TryInvokePublisherScript','currentFileData','UploadModelFromStream','TryInvokeNativeWebViewer','B3D-Native-Capture_','Cfrn','ExportModelMeshFormat','\.obj','\.3ds','\.dae')) {
+            if ($production -match $forbidden) { throw "Forbidden production route found: $forbidden" }
+          }
+          if ($project -match 'Bazis24FinalMeshPublisher\.js') { throw 'Script bridge remains embedded in production assembly' }
+          if ($html -match '<script\s+src=' -or $html -match 'https?://') { throw 'External dependency detected in HTML publisher' }
           $initializers = Get-ChildItem host/B3DPublisherHost/*.cs | Select-String -Pattern '\[ModuleInitializer\]|ProcessExit \+=' -SimpleMatch:$false
           if ($initializers) { throw "Automatic research initializers remain in production host: $($initializers.Path -join ', ')" }
-          if ($bridge -notmatch 'Снять выделение' -or $bridge -notmatch "e\.key==='Escape'") { throw 'Clear-selection UX is missing' }
-          if ($bridge -match '<script\s+src=' -or $bridge -match 'https?://') { throw 'External dependency detected in bridge HTML template' }
-      - name: Check bridge JavaScript syntax
-        shell: pwsh
-        run: node --check host/B3DPublisherHost/Bazis24FinalMeshPublisher.js
+
       - name: Publish single-file EXE
         run: >-
           dotnet publish host/B3DPublisherHost/B3DPublisherHost.csproj
@@ -89,5 +101,4 @@ jobs:
           --repo "${{ github.repository }}"
           --target "$env:GITHUB_SHA"
           --title "B3D Publisher $env:PUBLISHER_RELEASE_VERSION"
-          --notes "Windows x64 self-contained publisher. Production geometry is read only from the official BAZIS TTriMesh/TTriangleList/T3DTriangle Script API and written to one fully offline self-contained HTML. Materials and browser-supported texture files are embedded where BAZIS exposes them. No B3D reconstruction, OBJ/3DS/DAE conversion, WebViewer cloud dependency, or license bypass."
-
+          --notes "Windows x64 self-contained publisher. Production route is scriptless: the official BAZIS Viewer3D utility opens B3D and saves a temporary VRML mesh, which Publisher packages into one fully offline HTML and then removes the temporary export. Materials and local texture images are embedded where Viewer3D exposes them. No B3D reconstruction, OBJ/3DS/DAE production route, WebViewer cloud dependency, scripts, or license bypass."
