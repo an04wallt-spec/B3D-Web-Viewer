@@ -86,6 +86,7 @@ jobs:
           gh release create "publisher-$env:PUBLISHER_RELEASE_VERSION"
           release/B3D-Publisher.exe
           release/SHA256.txt
+          --repo "${{ github.repository }}"
           --target "$env:GITHUB_SHA"
           --title "B3D Publisher $env:PUBLISHER_RELEASE_VERSION"
           --notes "Windows x64 self-contained publisher. Production geometry is read only from the official BAZIS TTriMesh/TTriangleList/T3DTriangle Script API and written to one fully offline self-contained HTML. Materials and browser-supported texture files are embedded where BAZIS exposes them. No B3D reconstruction, OBJ/3DS/DAE conversion, WebViewer cloud dependency, or license bypass."
