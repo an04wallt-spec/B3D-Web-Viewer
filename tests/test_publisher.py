@@ -74,6 +74,15 @@ class PublisherRegressionTest(unittest.TestCase):
         self.assertIn("gl.CLAMP_TO_EDGE", bridge)
         self.assertIn("gl.LINEAR_MIPMAP_LINEAR", bridge)
 
+        # Exact click selection must use the depth-tested rendered pixel, then
+        # group all material surfaces belonging to the same BAZIS object.
+        self.assertIn("preserveDrawingBuffer:true", bridge)
+        self.assertIn("gl.readPixels", bridge)
+        self.assertIn("pickMode", bridge)
+        self.assertIn("pickColor", bridge)
+        self.assertIn("objectId", bridge)
+        self.assertIn("selectedObject", bridge)
+
         # Established viewer UX.
         self.assertIn("Снять выделение", bridge)
         self.assertIn("e.key==='Escape'", bridge)
