@@ -62,6 +62,16 @@ class PublisherRegressionTest(unittest.TestCase):
         self.assertIn("PathAbsolute", bridge)
         self.assertIn(";base64,", bridge)
 
+        # Payload compaction may only merge byte-equivalent final vertex records;
+        # position, normal and UV are all part of the key so seams remain intact.
+        self.assertIn("indexFinalVertices", bridge)
+        self.assertIn("Math.fround", bridge)
+        self.assertIn("values.join(',')", bridge)
+        self.assertIn("gl.drawElements", bridge)
+        self.assertIn("gl.ELEMENT_ARRAY_BUFFER", bridge)
+        self.assertIn("OES_element_index_uint", bridge)
+        self.assertIn("local-view-bazis24-final-mesh-3", bridge)
+
         # Edges are derived only from BAZIS' final triangle topology. Coplanar
         # triangulation diagonals must not be rendered as cabinet edges.
         self.assertIn("featureEdges", bridge)
@@ -91,7 +101,7 @@ class PublisherRegressionTest(unittest.TestCase):
 
         # The production deliverable is exactly one local HTML: no receipt or
         # other generated sidecar. Integrity metadata stays in the operator UI.
-        self.assertIn('PayloadFormatMarker = "local-view-bazis24-final-mesh-2"', program)
+        self.assertIn('PayloadFormatMarker = "local-view-bazis24-final-mesh-3"', program)
         self.assertIn('<script id=\\"data\\" type=\\"application/json\\">', program)
         self.assertNotIn(".publisher.txt", program)
         self.assertNotIn("File.WriteAllText(receipt", program)
