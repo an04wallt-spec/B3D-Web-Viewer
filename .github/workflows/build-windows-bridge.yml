@@ -1,93 +1,87 @@
-name: Build Windows B3D Publisher direct
+name: Build Windows B3D Publisher bridge
 
 on:
   push:
     paths:
-      - 'app/direct_publisher.py'
-      - 'parser/**'
-      - 'geometry/**'
+      - 'host/B3DPublisherHost/**'
       - 'tests/test_publisher.py'
       - '.github/workflows/build-windows-bridge.yml'
       - 'PUBLISHER_VERSION'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-dotnet@v4
         with:
-          python-version: '3.12'
+          dotnet-version: '8.0.x'
 
-      - name: Install build dependencies
-        shell: pwsh
-        run: python -m pip install --disable-pip-version-check numpy manifold3d pyinstaller
-
-      - name: Verify direct production route
+      - name: Verify production route
         shell: pwsh
         run: |
-          $publisher = Get-Content app/direct_publisher.py -Raw
-          $geometry = Get-Content geometry/final_geometry.py -Raw
-          $parser = Get-Content parser/b3d_parser.py -Raw
-          $production = $publisher + $geometry + $parser
+          $program = Get-Content host/B3DPublisherHost/Program.cs -Raw
+          $exporter = Get-Content host/B3DPublisherHost/Viewer3DExporter.cs -Raw
+          $parser = Get-Content host/B3DPublisherHost/VrmlParser.cs -Raw
+          $html = Get-Content host/B3DPublisherHost/OfflineHtmlPublisher.cs -Raw
+          $probe = Get-Content host/B3DPublisherHost/B3DHandlerProbe.cs -Raw
+          $project = Get-Content host/B3DPublisherHost/B3DPublisherHost.csproj -Raw
+          $production = $program + $exporter + $parser + $html + $probe + $project
 
-          foreach ($token in @('parse_current_model','extract_final_meshes','local-view-direct-b3d-2','gl.readPixels','gl.LINES','Снять выделение','Escape','Прозрачность','preserveDrawingBuffer:true')) {
-            if ($publisher -notmatch [regex]::Escape($token)) { throw "Missing direct publisher token: $token" }
+          foreach ($token in @('Viewer3DExporter.ExportToTemporaryWrl','VrmlParser.Parse','OfflineHtmlPublisher.Publish','local-view-bazis-viewer3d-wrl-1')) {
+            if ($program -notmatch [regex]::Escape($token)) { throw "Missing final-geometry bridge token: $token" }
           }
-          foreach ($token in @('decode_contour_blob','Manifold','solid=solid-','Trajectory','Contour','polygon_area')) {
-            if ($geometry -notmatch [regex]::Escape($token)) { throw "Missing direct geometry token: $token" }
+          foreach ($token in @('Viewer24.exe','Viewer3D','\.wrl','VRML','1136','1001')) {
+            if ($exporter -notmatch $token) { throw "Missing official Viewer3D export token: $token" }
           }
-          foreach ($forbidden in @('Viewer3D','Viewer24.exe','VrmlParser','\.wrl','UploadModelFromStream','TryInvokePublisherScript','currentFileData','WebViewer\.dll')) {
-            if ($production -match $forbidden) { throw "Forbidden old production route found: $forbidden" }
+          foreach ($token in @('IndexedFaceSet','coordIndex','TextureCoordinate','texCoordIndex','ImageTexture','diffuseColor')) {
+            if ($parser -notmatch $token) { throw "Missing VRML parser token: $token" }
+          }
+          foreach ($token in @('data:',';base64,','gl\.drawElements','gl\.LINES','gl\.readPixels','Снять выделение','Escape','Прозрачность','Рёбра')) {
+            if ($html -notmatch $token) { throw "Missing offline viewer token: $token" }
+          }
+          foreach ($token in @('--probe-b3d-handler','B3DHandlerProbe.BuildReport')) {
+            if ($program -notmatch [regex]::Escape($token)) { throw "Missing shell handler probe entry point: $token" }
+          }
+          foreach ($token in @('E357FCCD-A995-4576-B01F-234630154E96','8895B1C6-B41F-4C1C-A562-0D564250836F','InprocServer32','LocalServer32','RegistryView.Registry64','RegistryView.Registry32')) {
+            if ($probe -notmatch [regex]::Escape($token)) { throw "Missing shell handler diagnostic token: $token" }
           }
 
-      - name: Test source publisher against reference B3D
+          # Production must consume geometry emitted by BAZIS/Viewer3D. Research
+          # parsers may remain in the repository but must never enter this assembly.
+          foreach ($forbidden in @('parse_current_model','extract_final_meshes','decode_contour_blob','Manifold','solid=solid-','app/direct_publisher.py','geometry/final_geometry.py')) {
+            if ($production -match [regex]::Escape($forbidden)) { throw "B3D reconstruction leaked into production host: $forbidden" }
+          }
+          foreach ($forbidden in @('UploadModelFromStream','TryInvokePublisherScript','currentFileData','TryInvokeNativeWebViewer','B3D-Native-Capture_','Cfrn','ExportModelMeshFormat','\.obj','\.3ds','\.dae')) {
+            if ($production -match $forbidden) { throw "Forbidden production route found: $forbidden" }
+          }
+          if ($html -notmatch 'html\.Contains\("http://"' -or $html -notmatch 'html\.Contains\("https://"' -or $html -notmatch 'html\.Contains\("<script src="') {
+            throw 'Runtime offline validation is missing from HTML publisher'
+          }
+
+      - name: Build single-file EXE
+        run: >-
+          dotnet publish host/B3DPublisherHost/B3DPublisherHost.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o out
+
+      - name: Verify executable
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force buildtest | Out-Null
-          python app/direct_publisher.py 'samples/Стол_3100х750х1300.b3d' 'buildtest/source-test.html'
-          if ($LASTEXITCODE -ne 0) { throw 'Source direct publisher failed' }
-          $html = Get-Content buildtest/source-test.html -Raw
-          foreach ($token in @('local-view-direct-b3d-2','Снять выделение','gl.readPixels')) {
-            if ($html -notmatch [regex]::Escape($token)) { throw "Source HTML missing: $token" }
-          }
-          if ($html -match '<script src=' -or $html -match 'http://' -or $html -match 'https://') { throw 'Source HTML is not fully offline' }
-
-      - name: Build one-file Windows EXE
-        shell: pwsh
-        run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --name B3D-Publisher --paths parser --paths geometry --collect-all manifold3d app/direct_publisher.py
-          if (!(Test-Path 'dist/B3D-Publisher.exe')) { throw 'PyInstaller did not produce B3D-Publisher.exe' }
-
-      - name: Runtime-test packaged EXE
-        shell: pwsh
-        run: |
-          Remove-Item buildtest/exe-test.html -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath (Resolve-Path 'dist/B3D-Publisher.exe') -ArgumentList @((Resolve-Path 'samples/Стол_3100х750х1300.b3d'), (Join-Path (Resolve-Path 'buildtest') 'exe-test.html')) -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Packaged EXE exited with code $($p.ExitCode)" }
-          if (!(Test-Path 'buildtest/exe-test.html')) { throw 'Packaged EXE did not create HTML' }
-          $html = Get-Content buildtest/exe-test.html -Raw
-          foreach ($token in @('local-view-direct-b3d-2','Снять выделение','Escape','gl.readPixels','gl.LINES','Прозрачность')) {
-            if ($html -notmatch [regex]::Escape($token)) { throw "Packaged HTML missing: $token" }
-          }
-          if ($html -match '<script src=' -or $html -match 'http://' -or $html -match 'https://') { throw 'Packaged HTML is not fully offline' }
-          if ((Get-Item buildtest/exe-test.html).Length -lt 100000) { throw 'Packaged HTML unexpectedly small' }
-
-      - name: Prepare release artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item dist/B3D-Publisher.exe out/B3D-Publisher.exe
+          if (!(Test-Path out/B3D-Publisher.exe)) { throw 'B3D-Publisher.exe was not built' }
           $hash = (Get-FileHash out/B3D-Publisher.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  B3D-Publisher.exe" | Set-Content -Encoding ascii out/SHA256.txt
           Write-Host "B3D-Publisher.exe SHA256=$hash"
 
-      - name: Upload release candidate
+      - name: Upload research build
         uses: actions/upload-artifact@v4
         with:
           name: B3D-Publisher-Windows
@@ -95,31 +89,3 @@ jobs:
             out/B3D-Publisher.exe
             out/SHA256.txt
           if-no-files-found: error
-
-  release:
-    if: contains(github.event.head_commit.message, '[publisher-release]')
-    needs: build
-    runs-on: windows-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: B3D-Publisher-Windows
-          path: release
-      - name: Read version
-        shell: pwsh
-        run: |
-          $version = '${{ github.event.head_commit.message }}' -replace '^.*\[publisher-release\]\s*',''
-          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Release version is missing from commit message' }
-          "PUBLISHER_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Create GitHub release
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "publisher-$env:PUBLISHER_RELEASE_VERSION"
-          release/B3D-Publisher.exe
-          release/SHA256.txt
-          --repo "${{ github.repository }}"
-          --target "$env:GITHUB_SHA"
-          --title "B3D Publisher $env:PUBLISHER_RELEASE_VERSION"
-          --notes "Windows x64 self-contained publisher. Production route is direct and local: BAZIS BZ85 B3D is parsed directly, panel solids are built from stored contours/thickness/transforms, stored machining profiles and trajectories are swept and boolean-subtracted, and the resulting final geometry is packaged into one fully offline HTML viewer. No Viewer3D, VRML, scripts, WebViewer cloud, OBJ/3DS/DAE intermediate export, or license bypass."
