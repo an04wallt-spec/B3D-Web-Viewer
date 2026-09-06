@@ -62,13 +62,27 @@ class PublisherRegressionTest(unittest.TestCase):
         self.assertIn("PathAbsolute", bridge)
         self.assertIn(";base64,", bridge)
 
+        # Edges are derived only from BAZIS' final triangle topology. Coplanar
+        # triangulation diagonals must not be rendered as cabinet edges.
+        self.assertIn("featureEdges", bridge)
+        self.assertIn("creaseAngleDeg", bridge)
+        self.assertIn("gl.LINES", bridge)
+        self.assertNotIn("gl.LINE_LOOP", bridge)
+
+        # Arbitrary image dimensions must remain valid under the WebGL1 fallback.
+        self.assertIn("isPowerOfTwo", bridge)
+        self.assertIn("gl.CLAMP_TO_EDGE", bridge)
+        self.assertIn("gl.LINEAR_MIPMAP_LINEAR", bridge)
+
         # Established viewer UX.
         self.assertIn("Снять выделение", bridge)
         self.assertIn("e.key==='Escape'", bridge)
         self.assertIn("Прозрачность", bridge)
         self.assertIn("Рёбра", bridge)
 
-        # Forbidden production routes remain absent.
+        # Offline/self-contained contract and forbidden production routes.
+        self.assertIn("<script\\s+src=", bridge)
+        self.assertIn("https?:\\/\\/", bridge)
         self.assertNotIn("ExportModelMeshFormat(", bridge)
         self.assertNotIn("UploadModelFromStream", program)
         self.assertNotIn("TryInvokeNativeWebViewer", program)
