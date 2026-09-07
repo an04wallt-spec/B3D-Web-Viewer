@@ -1,4 +1,4 @@
-f45944ed9ed6b97ab894b063e5b417ddc49d56ef9f682431a9846fe9730d2793  Генератор.exe
+b16bd309956d6ad1d9c5550c35db9f6b251898d4324d3554b87c6d75fbe865d8  Генератор_STABLE_WORKING_2026-09-07.exe
 
-Stable Final: 2026-09-07
-One universal offline HTML; no Apple-specific branch in production.
+Stable Working: 2026-09-07
+Centered initial view; Fit preserves current orientation; mobile UI reduced; light no-texture mode.
