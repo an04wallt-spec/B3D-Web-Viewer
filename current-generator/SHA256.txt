@@ -1,2 +1,4 @@
-15eea4addd78330af6f46ff587da935a945e675f96974196c831759dc4449346  Генератор_STABLE_FINAL_2026-09-06.exe
-6da669268edbabf5a234e4cc22ce38a1a4b2a54232a2ada2cee02cbd5c4ea812  B3D_Offline_Generator_STABLE_FINAL_2026-09-06.zip
+f45944ed9ed6b97ab894b063e5b417ddc49d56ef9f682431a9846fe9730d2793  Генератор.exe
+
+Stable Final: 2026-09-07
+One universal offline HTML; no Apple-specific branch in production.
