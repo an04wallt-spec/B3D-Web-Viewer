@@ -1,0 +1,40 @@
+--- /mnt/data/v3base/main_windows.go	2026-09-30 14:12:37.000000000 +0000
++++ /mnt/data/v4work2/main_windows.go	2026-09-30 18:11:32.568350843 +0000
+@@ -45,18 +45,24 @@
+ 	WS_VISIBLE         = 0x10000000
+ 	WS_CHILD           = 0x40000000
+ 	BS_PUSHBUTTON      = 0x00000000
++	CBS_DROPDOWNLIST   = 0x00000003
++	WS_VSCROLL         = 0x00200000
++	CB_ADDSTRING       = 0x0143
++	CB_GETCURSEL       = 0x0147
++	CB_SETCURSEL       = 0x014E
+ 	SS_LEFT            = 0x00000000
+@@
+-	idStatusLabel = 1006
++	idStatusLabel   = 1006
++	idSimplifyCombo = 1007
+@@
+-	mainHwnd, btnHwnd, b3dLabelHwnd, objLabelHwnd, mtlLabelHwnd, texLabelHwnd, statusLabelHwnd uintptr
++	mainHwnd, btnHwnd, b3dLabelHwnd, objLabelHwnd, mtlLabelHwnd, texLabelHwnd, statusLabelHwnd, simplifyComboHwnd uintptr
+@@
+-		err := buildOfflineHTML(x.b3d, x.obj, x.mtl, out)
++		sel, _, _ := pSendMessageW.Call(simplifyComboHwnd, CB_GETCURSEL, 0, 0)
++		level := int(sel)
++		if level < SimplifyNone || level > SimplifyMaximum { level = SimplifyStrong }
++		err := buildOfflineHTML(x.b3d, x.obj, x.mtl, out, level)
+@@
+-		200, 160, 650, 340, 0, 0, hInst, 0)
++		200, 160, 650, 390, 0, 0, hInst, 0)
+@@
+ 	texLabelHwnd = createControl("STATIC", "Текстуры: —", WS_CHILD|WS_VISIBLE|SS_LEFT, 24, 136, 590, 42, mainHwnd, idTexLabel)
+-	btnHwnd = createControl("BUTTON", "СОЗДАТЬ 3D HTML", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON, 150, 192, 330, 50, mainHwnd, idBuildButton)
+-	statusLabelHwnd = createControl("STATIC", "Проверяю файлы…", WS_CHILD|WS_VISIBLE|SS_LEFT, 24, 260, 590, 36, mainHwnd, idStatusLabel)
++	createControl("STATIC", "Упрощение тяжёлых объектов:", WS_CHILD|WS_VISIBLE|SS_LEFT, 24, 184, 220, 22, mainHwnd, 0)
++	simplifyComboHwnd = createControl("COMBOBOX", "", WS_CHILD|WS_VISIBLE|WS_VSCROLL|CBS_DROPDOWNLIST, 250, 180, 270, 140, mainHwnd, idSimplifyCombo)
++	for _, item := range []string{"Нет", "Среднее", "Сильное (рекомендуется)", "Максимальное"} {
++		pSendMessageW.Call(simplifyComboHwnd, CB_ADDSTRING, 0, uintptr(unsafe.Pointer(wptr(item))))
++	}
++	pSendMessageW.Call(simplifyComboHwnd, CB_SETCURSEL, SimplifyStrong, 0)
++	btnHwnd = createControl("BUTTON", "СОЗДАТЬ 3D HTML", WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON, 150, 226, 330, 50, mainHwnd, idBuildButton)
++	statusLabelHwnd = createControl("STATIC", "Проверяю файлы…", WS_CHILD|WS_VISIBLE|SS_LEFT, 24, 294, 590, 36, mainHwnd, idStatusLabel)
