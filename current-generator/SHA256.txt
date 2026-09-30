@@ -1,4 +1,5 @@
-b16bd309956d6ad1d9c5550c35db9f6b251898d4324d3554b87c6d75fbe865d8  Генератор_STABLE_WORKING_2026-09-07.exe
+72e7096045b1ed82e0a9c327e2552929d4c9daf6a92adaba2c8b5d96087d9d98  Генератор_PRO_GLASS_2026-09-15.exe
+d2a9de053293929ec07c93ab73d6dfa3d68f99e7f8ae8a3ebac05cb93f6f3463  SOURCE.zip
 
-Stable Working: 2026-09-07
-Centered initial view; Fit preserves current orientation; mobile UI reduced; light no-texture mode.
+PRO Stable: 2026-09-15
+Current production checkpoint with dimensions, cuts, mobile UI refinements, blue cut slider and per-glass transparency.
