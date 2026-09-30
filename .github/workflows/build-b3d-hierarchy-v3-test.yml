@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           cat test-b3d-hierarchy/hierarchy.patch.b64.part-* | base64 -d > /tmp/hierarchy-v2.diff
-          base64 -d test-b3d-hierarchy/hierarchy-v3.patch.b64 > /tmp/hierarchy-v3.diff
+          cp test-b3d-hierarchy/hierarchy-v3.diff /tmp/hierarchy-v3.diff
           cd build
           patch --batch -p5 < /tmp/hierarchy-v2.diff
           patch --batch -p5 < /tmp/hierarchy-v3.diff
