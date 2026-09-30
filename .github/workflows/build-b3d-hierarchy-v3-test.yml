@@ -1,0 +1,46 @@
+name: Build B3D Hierarchy V3 Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "test-b3d-hierarchy/**"
+      - ".github/workflows/build-b3d-hierarchy-v3-test.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct Generic Groups source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir build
+          cat             test-generic-groups/source.b64.part-00             test-generic-groups/source.b64.part-01             test-generic-groups/source.b64.part-02a             test-generic-groups/source.b64.part-02b             test-generic-groups/source.b64.part-02c             test-generic-groups/source.b64.part-02d             test-generic-groups/source.b64.part-02e             test-generic-groups/source.b64.part-03             test-generic-groups/source.b64.part-04             | base64 -d > /tmp/generic-groups-source.zip
+          unzip -q /tmp/generic-groups-source.zip -d build
+      - name: Apply hierarchy V2 and V3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat test-b3d-hierarchy/hierarchy.patch.b64.part-* | base64 -d > /tmp/hierarchy-v2.diff
+          base64 -d test-b3d-hierarchy/hierarchy-v3.patch.b64 > /tmp/hierarchy-v3.diff
+          cd build
+          patch --batch -p5 < /tmp/hierarchy-v2.diff
+          patch --batch -p5 < /tmp/hierarchy-v3.diff
+          gofmt -w builder.go
+          go test ./...
+      - name: Build Windows GUI EXE
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build
+          GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" -o "Генератор_PRO_B3D_HIERARCHY_V3_TEST_2026-09-30.exe" .
+          sha256sum "Генератор_PRO_B3D_HIERARCHY_V3_TEST_2026-09-30.exe" > SHA256.txt
+          zip -9 "../B3D_HIERARCHY_V3_TEST_PACKAGE_2026-09-30.zip"             "Генератор_PRO_B3D_HIERARCHY_V3_TEST_2026-09-30.exe"             builder.go main_windows.go builder_test_main.go go.mod SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: B3D_HIERARCHY_V3_TEST_PACKAGE_2026-09-30
+          path: B3D_HIERARCHY_V3_TEST_PACKAGE_2026-09-30.zip
+          if-no-files-found: error
+          retention-days: 30
