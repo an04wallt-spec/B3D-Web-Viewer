@@ -1,0 +1,29 @@
+name: Build Generic Groups Test
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "test-generic-groups/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test EXE
+        shell: bash
+        run: |
+          set -e
+          mkdir build
+          unzip -q current-generator/SOURCE.zip -d build
+          cat test-generic-groups/patch.b64.part-* | base64 -d > /tmp/generic_groups.diff
+          cd build
+          patch --batch -p4 < /tmp/generic_groups.diff
+          gofmt -w builder.go
+          GOOS=windows GOARCH=amd64 go build -ldflags="-H=windowsgui" -o "Генератор_PRO_GENERIC_GROUPS_TEST_2026-09-30.exe" .
+          zip -9 "../GENERIC_GROUPS_TEST_PACKAGE_2026-09-30.zip" "Генератор_PRO_GENERIC_GROUPS_TEST_2026-09-30.exe" builder.go main_windows.go builder_test_main.go go.mod
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GENERIC_GROUPS_TEST_PACKAGE_2026-09-30
+          path: GENERIC_GROUPS_TEST_PACKAGE_2026-09-30.zip
