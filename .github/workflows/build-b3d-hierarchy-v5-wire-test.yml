@@ -40,18 +40,7 @@ jobs:
           base64 -d test-b3d-hierarchy-v5/main_windows.diff.b64 > /tmp/v5-windows.diff
           cd build
           patch --batch -p4 < /tmp/v5-builder.diff || true
-          python3 - <<'PY'
-from pathlib import Path
-p=Path("builder.go")
-s=p.read_text()
-start=s.find("\n\t\tappendProxyBox := func(")
-if start != -1:
-    end=s.find("\n\t\ttris, triLogical, triLeafForSimplify = newTris, newLogical, newLeaf", start)
-    if end == -1:
-        raise SystemExit("cannot locate end of V4 proxy block")
-    s=s[:start]+s[end:]
-p.write_text(s)
-PY
+          python3 -c 'from pathlib import Path; p=Path("builder.go"); s=p.read_text(); a=s.find("\\n\\t\\tappendProxyBox := func("); b=s.find("\\n\\t\\ttris, triLogical, triLeafForSimplify = newTris, newLogical, newLeaf", a) if a!=-1 else -1; (_ for _ in ()).throw(SystemExit("cannot locate end of V4 proxy block")) if a!=-1 and b==-1 else None; p.write_text(s if a==-1 else s[:a]+s[b:])'
           patch --batch -p4 < /tmp/v5-windows.diff
           gofmt -w builder.go main_windows.go builder_test_main.go
           go test ./...
