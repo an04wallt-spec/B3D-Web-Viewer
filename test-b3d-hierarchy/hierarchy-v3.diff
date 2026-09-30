@@ -1,0 +1,173 @@
+--- /mnt/data/gg2/hierarchy/builder.go	2026-09-30 13:30:07.659571084 +0000
++++ /mnt/data/hierarchy2/builder.go	2026-09-30 14:12:49.952154286 +0000
+@@ -970,6 +970,44 @@
+ 	return mapped
+ }
+ 
++func selectionLeafForTriangle(a, b, c v3, material string, leaves []selectionLeaf) int {
++	cent := [3]float64{(a.X + b.X + c.X) / 3, (a.Y + b.Y + c.Y) / 3, (a.Z + b.Z + c.Z) / 3}
++	nm := normalizeMaterial(material)
++	best := -1
++	bestScore := math.Inf(1)
++	for li, leaf := range leaves {
++		matPenalty := 0.0
++		lm := normalizeMaterial(leaf.Material)
++		if lm != "" && lm != "noname" && nm != "" && lm != nm {
++			matPenalty = 0.25
++		}
++		inside := true
++		score := matPenalty
++		vol := 1.0
++		for ax := 0; ax < 3; ax++ {
++			pad := 1.0
++			if cent[ax] < leaf.Min[ax]-pad || cent[ax] > leaf.Max[ax]+pad {
++				inside = false
++				break
++			}
++			sz := math.Max(1, leaf.Max[ax]-leaf.Min[ax])
++			mid := (leaf.Min[ax] + leaf.Max[ax]) * 0.5
++			d := (cent[ax] - mid) / sz
++			score += d * d
++			vol *= sz
++		}
++		if !inside {
++			continue
++		}
++		score += math.Log1p(vol) * 1e-6
++		if score < bestScore {
++			bestScore = score
++			best = li
++		}
++	}
++	return best
++}
++
+ func selectionGroupForTriangle(a, b, c v3, material string, groups []selectionGroup) int {
+ 	cent := [3]float64{(a.X + b.X + c.X) / 3, (a.Y + b.Y + c.Y) / 3, (a.Z + b.Z + c.Z) / 3}
+ 	nm := normalizeMaterial(material)
+@@ -1720,20 +1758,20 @@
+ 	partParents := []int32(nil)
+ 	usedStructured := false
+ 	if len(facadeHint.SelectionLeaves) > 0 {
+-		modelScale := math.Max(maxv[0]-minv[0], math.Max(maxv[1]-minv[1], maxv[2]-minv[2]))
+-		componentLeaf := mapComponentsToSelectionLeaves(partInfos, facadeHint.SelectionLeaves, modelScale)
+-
++		triLeaf := make([]int, len(tris))
+ 		groupHits := make([]int, len(facadeHint.SelectionGroups))
+-		for _, li := range componentLeaf {
+-			if li >= 0 && li < len(facadeHint.SelectionLeaves) {
++		leafHits := make([]int, len(facadeHint.SelectionLeaves))
++		for ti, tr := range tris {
++			li := selectionLeafForTriangle(pos[tr.R[0].V], pos[tr.R[1].V], pos[tr.R[2].V], tr.Material, facadeHint.SelectionLeaves)
++			triLeaf[ti] = li
++			if li >= 0 {
++				leafHits[li]++
+ 				owner := facadeHint.SelectionLeaves[li].Owner
+ 				if owner >= 0 && owner < len(groupHits) {
+ 					groupHits[owner]++
+ 				}
+ 			}
+ 		}
+-		// Keep structural ancestors even when only descendants own geometry. This
+-		// preserves the actual B3D tree for outer blocks such as cabinet modules.
+ 		for g, hits := range append([]int(nil), groupHits...) {
+ 			if hits == 0 {
+ 				continue
+@@ -1753,56 +1791,57 @@
+ 				next++
+ 			}
+ 		}
+-		if next > 0 || len(componentLeaf) > 0 {
+-			usedStructured = true
+-			partParents = make([]int32, 0, int(next)+len(partInfos))
+-			for g := range facadeHint.SelectionGroups {
+-				if !groupValid[g] {
+-					continue
+-				}
+-				parentID := int32(-1)
+-				for p := facadeHint.SelectionGroups[g].Parent; p >= 0; p = facadeHint.SelectionGroups[p].Parent {
+-					if groupValid[p] {
+-						parentID = int32(groupID[p])
+-						break
+-					}
++
++		rootLeafID := make(map[int]uint32)
++		partParents = make([]int32, 0, int(next)+len(facadeHint.SelectionLeaves)+len(partInfos))
++		for g := range facadeHint.SelectionGroups {
++			if !groupValid[g] {
++				continue
++			}
++			parentID := int32(-1)
++			for p := facadeHint.SelectionGroups[g].Parent; p >= 0; p = facadeHint.SelectionGroups[p].Parent {
++				if groupValid[p] {
++					parentID = int32(groupID[p])
++					break
+ 				}
+-				partParents = append(partParents, parentID)
+ 			}
++			partParents = append(partParents, parentID)
++		}
++		for li, hits := range leafHits {
++			if hits == 0 || facadeHint.SelectionLeaves[li].Owner >= 0 {
++				continue
++			}
++			rootLeafID[li] = next
++			next++
++			partParents = append(partParents, -1)
++		}
+ 
+-			// Each B3D leaf owns one selectable leaf id. That id is parented to the
+-			// exact B3D block/assembly owner. Clicking a drawer bottom therefore
+-			// resolves to the same drawer block as its other four details.
+-			leafID := map[int]uint32{}
+-			physID := map[uint32]uint32{}
+-			for _, pi := range partInfos {
+-				if pi == nil {
++		physID := map[uint32]uint32{}
++		for ti, tr := range tris {
++			li := triLeaf[ti]
++			if li >= 0 {
++				owner := facadeHint.SelectionLeaves[li].Owner
++				if owner >= 0 && owner < len(groupValid) && groupValid[owner] {
++					triLogical[ti] = groupID[owner]
+ 					continue
+ 				}
+-				if li, ok := componentLeaf[pi.ID]; ok {
+-					id, exists := leafID[li]
+-					if !exists {
+-						id = next
+-						next++
+-						leafID[li] = id
+-						parentID := int32(-1)
+-						owner := facadeHint.SelectionLeaves[li].Owner
+-						if owner >= 0 && owner < len(groupValid) && groupValid[owner] {
+-							parentID = int32(groupID[owner])
+-						}
+-						partParents = append(partParents, parentID)
+-					}
+-					physID[pi.ID] = id
++				if id, ok := rootLeafID[li]; ok {
++					triLogical[ti] = id
+ 					continue
+ 				}
+-				id := next
++			}
++			p := partOf(tr.R[0].V)
++			id, ok := physID[p]
++			if !ok {
++				id = next
+ 				next++
+-				physID[pi.ID] = id
++				physID[p] = id
+ 				partParents = append(partParents, -1)
+ 			}
+-			for ti, tr := range tris {
+-				triLogical[ti] = physID[partOf(tr.R[0].V)]
+-			}
++			triLogical[ti] = id
++		}
++		if next > 0 {
++			usedStructured = true
+ 			logicalPartCount = int(next)
+ 		}
+ 	}
