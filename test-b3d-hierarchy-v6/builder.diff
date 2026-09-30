@@ -1,0 +1,74 @@
+--- src/builder.go	2026-09-30 18:51:35.000000000 +0000
++++ v6src/builder.go	2026-09-30 22:33:45.291032479 +0000
+@@ -1837,6 +1837,46 @@
+ 			}
+ 			return math.Sqrt(d2)
+ 		}
++		// Generic hierarchy inheritance guard. Some compound hardware (handles, hinges,
++		// imported fittings) has a small cap/fillet remainder whose triangle centroids
++		// fall outside the B3D leaf boxes. If a connected OBJ island is already mapped
++		// to exactly one structural owner for a clear majority of its triangles, the
++		// unmatched remainder inherits that same owner. We never promote components
++		// that contain triangles from multiple owners, so touching cabinet geometry is
++		// not merged accidentally.
++		type componentOwnerStat struct {
++			Total int
++			Hits  map[int]int
++		}
++		componentStats := map[uint32]*componentOwnerStat{}
++		for ti, tr := range tris {
++			p := partOf(tr.R[0].V)
++			st := componentStats[p]
++			if st == nil {
++				st = &componentOwnerStat{Hits: map[int]int{}}
++				componentStats[p] = st
++			}
++			st.Total++
++			li := triLeaf[ti]
++			if li >= 0 {
++				owner := facadeHint.SelectionLeaves[li].Owner
++				if owner >= 0 {
++					st.Hits[owner]++
++				}
++			}
++		}
++		componentInheritedOwner := map[uint32]int{}
++		for pid, st := range componentStats {
++			if st.Total == 0 || len(st.Hits) != 1 {
++				continue
++			}
++			for owner, n := range st.Hits {
++				if float64(n)/float64(st.Total) >= 0.70 {
++					componentInheritedOwner[pid] = owner
++				}
++			}
++		}
++
+ 		compFallbackGroup := map[uint32]int{}
+ 		for _, pi := range partInfos {
+ 			if pi == nil {
+@@ -1928,6 +1968,10 @@
+ 				}
+ 			}
+ 			p := partOf(tr.R[0].V)
++			if g, ok := componentInheritedOwner[p]; ok && g >= 0 && g < len(groupValid) && groupValid[g] {
++				triLogical[ti] = groupID[g]
++				continue
++			}
+ 			if g, ok := compFallbackGroup[p]; ok && g >= 0 && g < len(groupValid) && groupValid[g] {
+ 				triLogical[ti] = groupID[g]
+ 				continue
+@@ -2092,9 +2136,11 @@
+ 					plans[li].Step = int(math.Ceil(float64(n) / 2000.0))
+ 				}
+ 			case SimplifyStrong:
+-				if n > 500 {
+-					plans[li].WireOnly = true
+-				}
++				// Strong mode is intentionally aggressive for imported CAD bodies:
++				// no filled proxy/brick geometry survives. Every imported Type=10000
++				// leaf is rendered only by cleaned feature edges, even when that leaf
++				// itself is relatively small but belongs to a complex fitting assembly.
++				plans[li].WireOnly = true
+ 			}
+ 		}
