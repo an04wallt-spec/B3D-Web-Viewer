@@ -25,7 +25,7 @@ jobs:
           set -euo pipefail
           cat test-b3d-hierarchy/hierarchy.patch.b64.part-* | base64 -d > /tmp/hierarchy.diff
           cd build
-          patch --batch -p4 < /tmp/hierarchy.diff
+          patch --batch -p5 < /tmp/hierarchy.diff
           gofmt -w builder.go
           go test ./...
       - name: Build Windows GUI EXE
