@@ -1,0 +1,1 @@
+Build isolated Generic Groups test package from source chunks.
