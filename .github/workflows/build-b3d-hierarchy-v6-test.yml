@@ -44,8 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           cd build
-          patch --batch -p1 < ../test-b3d-hierarchy-v6/builder.diff
-          patch --batch -p1 < ../test-b3d-hierarchy-v6/main_windows.diff
+          base64 -d ../test-b3d-hierarchy-v6/builder.diff.b64 > /tmp/v6-builder.diff
+          base64 -d ../test-b3d-hierarchy-v6/main_windows.diff.b64 > /tmp/v6-windows.diff
+          patch --batch -p1 < /tmp/v6-builder.diff
+          patch --batch -p1 < /tmp/v6-windows.diff
           gofmt -w builder.go main_windows.go builder_test_main.go
           go test ./...
 
