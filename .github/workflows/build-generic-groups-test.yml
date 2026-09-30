@@ -16,7 +16,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir build
-          cat test-generic-groups/source.b64.part-* | base64 -d > /tmp/generic-groups-source.zip
+          cat             test-generic-groups/source.b64.part-00             test-generic-groups/source.b64.part-01             test-generic-groups/source.b64.part-02a             test-generic-groups/source.b64.part-02b             test-generic-groups/source.b64.part-02c             test-generic-groups/source.b64.part-02d             test-generic-groups/source.b64.part-02e             test-generic-groups/source.b64.part-03             test-generic-groups/source.b64.part-04             | base64 -d > /tmp/generic-groups-source.zip
+          unzip -t /tmp/generic-groups-source.zip
           unzip -q /tmp/generic-groups-source.zip -d build
           cd build
           gofmt -w builder.go
