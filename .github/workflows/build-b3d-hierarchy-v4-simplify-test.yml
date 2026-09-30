@@ -26,13 +26,13 @@ jobs:
           patch --batch -p5 < /tmp/hierarchy-v2.diff
           patch --batch -p5 < /tmp/hierarchy-v3.diff
 
-      - name: Apply V4 fixes and simplification
+      - name: Apply exact V4 fixes and simplification
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d test-b3d-hierarchy-v4/builder.diff.b64 > /tmp/v4-builder.diff
-          base64 -d test-b3d-hierarchy-v4/main_windows.diff.b64 > /tmp/v4-windows.diff
-          base64 -d test-b3d-hierarchy-v4/builder_test_main.diff.b64 > /tmp/v4-testmain.diff
+          cat test-b3d-hierarchy-v4/builder.exact.b64.part-* | base64 -d > /tmp/v4-builder.diff
+          base64 -d test-b3d-hierarchy-v4/main_windows.exact.diff.b64 > /tmp/v4-windows.diff
+          base64 -d test-b3d-hierarchy-v4/builder_test_main.exact.diff.b64 > /tmp/v4-testmain.diff
           cd build
           patch --batch -p4 < /tmp/v4-builder.diff
           patch --batch -p4 < /tmp/v4-windows.diff
