@@ -1,0 +1,219 @@
+--- /mnt/data/v3base/builder.go	2026-09-30 14:12:49.000000000 +0000
++++ /mnt/data/v4work2/builder.go	2026-09-30 18:13:45.270629986 +0000
+@@ -25,6 +25,26 @@
+ type v2 struct{ U, V float64 }
+ type faceRef struct{ V, T, N int }
+ 
++const (
++	SimplifyNone = iota
++	SimplifyMedium
++	SimplifyStrong
++	SimplifyMaximum
++)
++
++func simplifyLevelName(level int) string {
++	switch level {
++	case SimplifyMedium:
++		return "medium"
++	case SimplifyStrong:
++		return "strong"
++	case SimplifyMaximum:
++		return "maximum"
++	default:
++		return "none"
++	}
++}
++
+ type MeshPayload struct {
+ 	Material    string `json:"material"`
+ 	Texture     string `json:"texture,omitempty"`
+@@ -1533,10 +1553,10 @@
+ 	return logical, int(next)
+ }
+ 
+-func parseOBJ(path string, matTex map[string]string, facadeHint FacadeHint) ([]MeshPayload, EdgePayload, int, []int32, BoundsPayload, error) {
++func parseOBJ(path string, matTex map[string]string, facadeHint FacadeHint, simplifyLevel int) ([]MeshPayload, EdgePayload, int, []int32, BoundsPayload, int, int, error) {
+ 	f, err := os.Open(path)
+ 	if err != nil {
+-		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, err
++		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, err
+ 	}
+ 	defer f.Close()
+@@ -1602,7 +1622,7 @@
+ 			y, e2 := strconv.ParseFloat(fields[2], 64)
+ 			z, e3 := strconv.ParseFloat(fields[3], 64)
+ 			if e1 != nil || e2 != nil || e3 != nil {
+-				return nil, EdgePayload{}, 0, nil, BoundsPayload{}, fmt.Errorf("OBJ line %d: bad vertex", lineNo)
++				return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, fmt.Errorf("OBJ line %d: bad vertex", lineNo)
+ 			}
+@@ -1641,19 +1661,19 @@
+ 				parts := strings.Split(tok, "/")
+ 				vi, e := resolveIndex(parts[0], len(pos))
+ 				if e != nil {
+-					return nil, EdgePayload{}, 0, nil, BoundsPayload{}, fmt.Errorf("OBJ line %d: %v", lineNo, e)
++					return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, fmt.Errorf("OBJ line %d: %v", lineNo, e)
+ 				}
+ 				ti, ni := -1, -1
+ 				if len(parts) > 1 && parts[1] != "" {
+ 					ti, e = resolveIndex(parts[1], len(uv))
+ 					if e != nil {
+-						return nil, EdgePayload{}, 0, nil, BoundsPayload{}, fmt.Errorf("OBJ line %d: %v", lineNo, e)
++						return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, fmt.Errorf("OBJ line %d: %v", lineNo, e)
+ 					}
+ 				}
+ 				if len(parts) > 2 && parts[2] != "" {
+ 					ni, e = resolveIndex(parts[2], len(nor))
+ 					if e != nil {
+-						return nil, EdgePayload{}, 0, nil, BoundsPayload{}, fmt.Errorf("OBJ line %d: %v", lineNo, e)
++						return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, fmt.Errorf("OBJ line %d: %v", lineNo, e)
+ 					}
+ 				}
+@@ -1669,10 +1689,10 @@
+ 		}
+ 	}
+ 	if err := sc.Err(); err != nil {
+-		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, err
++		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, err
+ 	}
+ 	if len(pos) == 0 {
+-		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, errors.New("OBJ не содержит вершин")
++		return nil, EdgePayload{}, 0, nil, BoundsPayload{}, 0, 0, errors.New("OBJ не содержит вершин")
+ 	}
+@@ -1753,7 +1773,12 @@
+ 	// geometry-bearing B3D leaf, then inherit that leaf's real B3D parent block.
+ 	// This is the key difference from the first Generic Groups test: grouping is
+ 	// no longer decided triangle-by-triangle by a nearby bounding box.
++	originalTriangleCount := len(tris)
+ 	triLogical := make([]uint32, len(tris))
++	triLeafForSimplify := make([]int, len(tris))
++	for i := range triLeafForSimplify {
++		triLeafForSimplify[i] = -1
++	}
+ 	logicalPartCount := 0
+ 	partParents := []int32(nil)
+ 	usedStructured := false
+@@ -1764,6 +1789,7 @@
+ 		for ti, tr := range tris {
+ 			li := selectionLeafForTriangle(pos[tr.R[0].V], pos[tr.R[1].V], pos[tr.R[2].V], tr.Material, facadeHint.SelectionLeaves)
+ 			triLeaf[ti] = li
++			triLeafForSimplify[ti] = li
+ 			if li >= 0 {
+@@ -1772,6 +1798,80 @@
+ 				}
+ 			}
+ 		}
++		modelScale := math.Max(maxv[0]-minv[0], math.Max(maxv[1]-minv[1], maxv[2]-minv[2]))
++		if modelScale < 1 { modelScale = 1 }
++		compOwners := map[uint32]map[int]int{}
++		for ti, tr := range tris {
++			li := triLeaf[ti]
++			if li < 0 { continue }
++			owner := facadeHint.SelectionLeaves[li].Owner
++			if owner < 0 { continue }
++			p := partOf(tr.R[0].V)
++			if compOwners[p] == nil { compOwners[p] = map[int]int{} }
++			compOwners[p][owner]++
++		}
++		boxGap := func(pi *partInfo, leaf selectionLeaf) float64 {
++			if pi == nil { return math.Inf(1) }
++			var d2 float64
++			for ax := 0; ax < 3; ax++ {
++				d := 0.0
++				if pi.Max[ax] < leaf.Min[ax] { d = leaf.Min[ax]-pi.Max[ax] } else if leaf.Max[ax] < pi.Min[ax] { d = pi.Min[ax]-leaf.Max[ax] }
++				d2 += d*d
++			}
++			return math.Sqrt(d2)
++		}
++		compFallbackGroup := map[uint32]int{}
++		for _, pi := range partInfos {
++			if pi == nil { continue }
++			owners := compOwners[pi.ID]
++			if len(owners) > 1 { continue }
++			knownOwner := -1
++			for owner := range owners { knownOwner = owner }
++			bestOwner, bestGap := -1, math.Inf(1)
++			for li, leaf := range facadeHint.SelectionLeaves {
++				if leafHits[li] != 0 || leaf.Owner < 0 || !partMatchesLeafMaterial(pi, leaf) { continue }
++				if knownOwner >= 0 && leaf.Owner != knownOwner { continue }
++				gap := boxGap(pi, leaf)
++				if gap < bestGap { bestGap, bestOwner = gap, leaf.Owner }
++			}
++			if bestOwner >= 0 && bestGap <= math.Max(50, modelScale*0.03) {
++				compFallbackGroup[pi.ID] = bestOwner
++				groupHits[bestOwner]++
++			}
++		}
++
+ 		for g, hits := range append([]int(nil), groupHits...) {
+@@ -1831,6 +1931,10 @@
+ 				}
+ 			}
+ 			p := partOf(tr.R[0].V)
++			if g, ok := compFallbackGroup[p]; ok && g >= 0 && g < len(groupValid) && groupValid[g] {
++				triLogical[ti] = groupID[g]
++				continue
++			}
+ 			id, ok := physID[p]
+@@ -1956,6 +2060,138 @@
+ 		}
+ 	}
+ 
++	if simplifyLevel < SimplifyNone || simplifyLevel > SimplifyMaximum { simplifyLevel = SimplifyStrong }
++	if simplifyLevel != SimplifyNone && len(facadeHint.SelectionLeaves) > 0 && len(triLeafForSimplify) == len(tris) {
++		leafTris := make([][]int, len(facadeHint.SelectionLeaves))
++		for ti, li := range triLeafForSimplify { if li >= 0 && li < len(leafTris) { leafTris[li] = append(leafTris[li], ti) } }
++		type simpPlan struct { Proxy bool; Step int }
++		plans := make([]simpPlan, len(leafTris))
++		for li, idxs := range leafTris {
++			if len(idxs)==0 || facadeHint.SelectionLeaves[li].Type != 10000 { continue }
++			n := len(idxs)
++			switch simplifyLevel {
++			case SimplifyMedium:
++				if n > 4000 { plans[li].Step = int(math.Ceil(float64(n)/2000.0)) }
++			case SimplifyStrong:
++				if n > 1500 { plans[li].Proxy = true } else if n > 500 { plans[li].Step = int(math.Ceil(float64(n)/500.0)) }
++			case SimplifyMaximum:
++				if n > 200 { plans[li].Proxy = true }
++			}
++		}
++		newTris := make([]triRec,0,len(tris)); newLogical := make([]uint32,0,len(triLogical)); newLeaf := make([]int,0,len(triLeafForSimplify)); seen:=make([]int,len(leafTris))
++		for ti,tr := range tris {
++			li:=triLeafForSimplify[ti]
++			if li>=0 && li<len(plans) {
++				pl:=plans[li]
++				if pl.Proxy { continue }
++				if pl.Step>1 { k:=seen[li]; seen[li]++; if k%pl.Step!=0 { continue } }
++			}
++			newTris=append(newTris,tr); newLogical=append(newLogical,triLogical[ti]); newLeaf=append(newLeaf,li)
++		}
++		appendProxyBox := func(li int, idxs []int) {
++			if len(idxs)==0 { return }
++			mn := [3]float64{math.Inf(1),math.Inf(1),math.Inf(1)}; mx := [3]float64{math.Inf(-1),math.Inf(-1),math.Inf(-1)}
++			matCounts:=map[string]int{}; logical:=triLogical[idxs[0]]
++			for _,ti:=range idxs { tr:=tris[ti]; matCounts[tr.Material]++; for _,rr:=range tr.R { v:=pos[rr.V]; vals:=[3]float64{v.X,v.Y,v.Z}; for ax:=0;ax<3;ax++ { if vals[ax]<mn[ax]{mn[ax]=vals[ax]}; if vals[ax]>mx[ax]{mx[ax]=vals[ax]} } } }
++			if math.IsInf(mn[0],0)||math.IsInf(mn[1],0)||math.IsInf(mn[2],0)||math.IsInf(mx[0],0)||math.IsInf(mx[1],0)||math.IsInf(mx[2],0){return}
++			mat:=tris[idxs[0]].Material; bestN:=-1; for m,n:=range matCounts { if n>bestN {mat,bestN=m,n} }
++			base:=len(pos); boxVerts:=[]v3{{mn[0],mn[1],mn[2]},{mx[0],mn[1],mn[2]},{mx[0],mx[1],mn[2]},{mn[0],mx[1],mn[2]},{mn[0],mn[1],mx[2]},{mx[0],mn[1],mx[2]},{mx[0],mx[1],mx[2]},{mn[0],mx[1],mx[2]}}; pos=append(pos,boxVerts...)
++			faces:=[][3]int{{0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},{1,2,6},{1,6,5},{2,3,7},{2,7,6},{3,0,4},{3,4,7}}
++			for _,f3:=range faces { r:=[3]faceRef{{V:base+f3[0],T:-1,N:-1},{V:base+f3[1],T:-1,N:-1},{V:base+f3[2],T:-1,N:-1}}; fn:=faceNormal(pos[r[0].V],pos[r[1].V],pos[r[2].V]); newTris=append(newTris,triRec{R:r,Material:mat,Normal:fn}); newLogical=append(newLogical,logical); newLeaf=append(newLeaf,li) }
++		}
++		for li,pl:=range plans { if pl.Proxy { appendProxyBox(li,leafTris[li]) } }
++		tris,triLogical,triLeafForSimplify=newTris,newLogical,newLeaf
++	}
++	edges = map[edgeKey]*edgeInfo{}
++	for ti := range tris { tr:=&tris[ti]; tr.Normal=faceNormal(pos[tr.R[0].V],pos[tr.R[1].V],pos[tr.R[2].V]); addEdge(tr.R[0].V,tr.R[1].V,tr.Normal); addEdge(tr.R[1].V,tr.R[2].V,tr.Normal); addEdge(tr.R[2].V,tr.R[0].V,tr.Normal) }
++
+ 	// Associate every visible OBJ edge with the logical part owning its adjacent
+@@ -2160,7 +2396,7 @@
+-	return meshes, edgePayload, logicalPartCount, partParents, b, nil
++	return meshes, edgePayload, logicalPartCount, partParents, b, originalTriangleCount, len(tris), nil
+ }
+@@ -2203,13 +2439,13 @@
+-func buildOfflineHTML(b3dPath, objPath, mtlPath, outPath string) error {
++func buildOfflineHTML(b3dPath, objPath, mtlPath, outPath string, simplifyLevel int) error {
+@@
+-	meshes, edges, partCount, partParents, bounds, err := parseOBJ(objPath, matTex, facadeHint)
++	meshes, edges, partCount, partParents, bounds, originalTriangles, finalTriangles, err := parseOBJ(objPath, matTex, facadeHint, simplifyLevel)
+@@
+-	payload := ModelPayload{Meshes: meshes, Edges: edges, PartCount: partCount, PartParents: partParents, Textures: textures, Bounds: bounds, MeasureBounds: measureBounds, SourceB3D: base64.StdEncoding.EncodeToString(b3d), Meta: map[string]string{"title": title, "generator": "B3D Offline Generator"}}
++	payload := ModelPayload{Meshes: meshes, Edges: edges, PartCount: partCount, PartParents: partParents, Textures: textures, Bounds: bounds, MeasureBounds: measureBounds, SourceB3D: base64.StdEncoding.EncodeToString(b3d), Meta: map[string]string{"title": title, "generator": "B3D Offline Generator", "simplification": simplifyLevelName(simplifyLevel), "trianglesOriginal": strconv.Itoa(originalTriangles), "trianglesFinal": strconv.Itoa(finalTriangles)}}
