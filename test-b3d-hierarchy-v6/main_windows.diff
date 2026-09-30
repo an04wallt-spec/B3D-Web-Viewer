@@ -1,0 +1,139 @@
+--- src/main_windows.go	2026-09-30 18:51:35.000000000 +0000
++++ v6src/main_windows.go	2026-09-30 22:34:13.312638110 +0000
+@@ -6,8 +6,10 @@
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"sort"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 	"unsafe"
+@@ -28,6 +30,7 @@
+ 	pPostQuitMessage  = user32.NewProc("PostQuitMessage")
+ 	pSetWindowTextW   = user32.NewProc("SetWindowTextW")
+ 	pSendMessageW     = user32.NewProc("SendMessageW")
++	pPostMessageW     = user32.NewProc("PostMessageW")
+ 	pMessageBoxW      = user32.NewProc("MessageBoxW")
+ 	pEnableWindow     = user32.NewProc("EnableWindow")
+ 	pGetStockObject   = syscall.NewLazyDLL("gdi32.dll").NewProc("GetStockObject")
+@@ -38,6 +41,8 @@
+ 	WM_DESTROY         = 0x0002
+ 	WM_COMMAND         = 0x0111
+ 	WM_SETFONT         = 0x0030
++	WM_APP             = 0x8000
++	WM_BUILD_DONE      = WM_APP + 1
+ 	SW_SHOW            = 5
+ 	WS_CAPTION         = 0x00C00000
+ 	WS_SYSMENU         = 0x00080000
+@@ -97,11 +102,18 @@
+ 	mtl string
+ }
+ 
++type buildResult struct {
++	out string
++	err error
++}
++
+ var (
+ 	mainHwnd, btnHwnd, b3dLabelHwnd, objLabelHwnd, mtlLabelHwnd, texLabelHwnd, statusLabelHwnd, simplifyNoneHwnd, simplifyMediumHwnd, simplifyStrongHwnd uintptr
+ 	exeDir                                                                                                                                               string
+ 	inputs                                                                                                                                               inputSet
+ 	running                                                                                                                                              bool
++	resultMu                                                                                                                                             sync.Mutex
++	pendingBuildResult                                                                                                                                   *buildResult
+ )
+@@ -232,6 +244,32 @@
+ 	_ = os.WriteFile(path, []byte(text), 0644)
+ }
+ 
++func setBuildControlsEnabled(enabled bool) {
++	v := uintptr(0)
++	if enabled {
++		v = 1
++	}
++	pEnableWindow.Call(btnHwnd, v)
++	pEnableWindow.Call(simplifyNoneHwnd, v)
++	pEnableWindow.Call(simplifyMediumHwnd, v)
++	pEnableWindow.Call(simplifyStrongHwnd, v)
++}
++
++func postBuildResult(out string, err error) {
++	resultMu.Lock()
++	pendingBuildResult = &buildResult{out: out, err: err}
++	resultMu.Unlock()
++	pPostMessageW.Call(mainHwnd, WM_BUILD_DONE, 0, 0)
++}
++
++func consumeBuildResult() *buildResult {
++	resultMu.Lock()
++	r := pendingBuildResult
++	pendingBuildResult = nil
++	resultMu.Unlock()
++	return r
++}
++
+ func startBuild() {
+ 	if running {
+ 		return
+@@ -255,22 +293,19 @@
+ 		level = SimplifyStrong
+ 	}
+ 	running = true
+-	pEnableWindow.Call(btnHwnd, 0)
++	setBuildControlsEnabled(false)
+ 	setText(statusLabelHwnd, "Собираю автономный HTML…")
+ 	go func(level int) {
+ 		out := outputPathFor(x.b3d)
+ 		err := buildOfflineHTML(x.b3d, x.obj, x.mtl, out, level)
+ 		if err != nil {
+ 			writeErrorLog(err)
+-			setText(statusLabelHwnd, "Ошибка: "+err.Error())
+-			message("HTML не создан.\r\n\r\n"+err.Error()+"\r\n\r\nПодробности: Generator_error.log", "Генератор", MB_OK|MB_ICONERROR)
+ 		} else {
+ 			_ = os.Remove(filepath.Join(exeDir, "Generator_error.log"))
+-			setText(statusLabelHwnd, "Готово: "+filepath.Base(out))
+-			message("Готово.\r\n\r\nСоздан файл:\r\n"+filepath.Base(out)+"\r\n\r\nИсходные B3D, OBJ, MTL и текстуры не изменялись.", "Генератор", MB_OK|MB_ICONINFORMATION)
+ 		}
+-		running = false
+-		pEnableWindow.Call(btnHwnd, 1)
++		// The worker never touches Win32 controls directly. It only stores the
++		// result and posts a message back to the UI thread.
++		postBuildResult(out, err)
+ 	}(level)
+ }
+@@ -281,6 +316,22 @@
+ 			startBuild()
+ 			return 0
+ 		}
++	case WM_BUILD_DONE:
++		r := consumeBuildResult()
++		running = false
++		setBuildControlsEnabled(true)
++		if r == nil {
++			setText(statusLabelHwnd, "Готов к созданию HTML")
++			return 0
++		}
++		if r.err != nil {
++			setText(statusLabelHwnd, "Ошибка: "+r.err.Error())
++			message("HTML не создан.\r\n\r\n"+r.err.Error()+"\r\n\r\nПодробности: Generator_error.log", "Генератор", MB_OK|MB_ICONERROR)
++		} else {
++			setText(statusLabelHwnd, "Готово: "+filepath.Base(r.out))
++			message("Готово.\r\n\r\nСоздан файл:\r\n"+filepath.Base(r.out)+"\r\n\r\nИсходные B3D, OBJ, MTL и текстуры не изменялись.", "Генератор", MB_OK|MB_ICONINFORMATION)
++		}
++		return 0
+ 	case WM_DESTROY:
+ 		pPostQuitMessage.Call(0)
+ 		return 0
+@@ -299,6 +350,9 @@
+ }
+ 
+ func main() {
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++
+ 	exe, err := os.Executable()
+ 	if err != nil {
+ 		return
